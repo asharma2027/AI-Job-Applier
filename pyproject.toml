@@ -1,12 +1,12 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "job-applier"
 version = "0.1.0"
 description = "Autonomous background agent for job applications"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     # Orchestration
     "langgraph>=0.2.0",
@@ -63,11 +63,20 @@ dependencies = [
 where = ["."]
 include = ["src*"]
 
+[project.scripts]
+job-applier = "src.main:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 python_files = ["test_*.py"]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
