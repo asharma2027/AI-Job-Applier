@@ -85,27 +85,37 @@ async def scrape_handshake() -> list[JobListing]:
     Scrape Handshake using browser-use with authenticated session.
     Falls back gracefully if credentials not set.
     """
-    if not settings.handshake_email or not settings.handshake_password:
+    use_sso = bool(settings.uchicago_cnet_id and settings.uchicago_password)
+    
+    if not use_sso and (not settings.handshake_email or not settings.handshake_password):
         logger.warning("[sourcer] Handshake credentials not set. Skipping.")
         return []
 
     try:
         from browser_use import Agent
-        from langchain_openai import ChatOpenAI
-        from langchain_anthropic import ChatAnthropic
+        
+        # Use config's fast LLM instance
+        llm = settings.get_llm_fast()
 
-        if settings.llm_provider == "openai":
-            llm = ChatOpenAI(model=settings.llm_model, api_key=settings.openai_api_key)
+        if use_sso:
+            task = f"""
+            1. Go to https://uchicago.joinhandshake.com/login
+            2. Click on "College Students and Alumni login".
+            3. Type '{settings.uchicago_cnet_id}', hit enter to advance to the next page.
+            4. Switch focus to the password field, enter '{settings.uchicago_password}', hit enter to advance.
+            5. IMPORTANT: You will reach a Duo Mobile authentication screen where a code is displayed. You MUST wait patiently for the user to type the code shown on the screen into the Duo Mobile app on their phone. Do NOT attempt to bypass or guess. Wait until the page automatically advances past the login flow.
+            6. Once securely logged into Handshake, navigate to Jobs -> Internships filter.
+            7. Extract the first 20 internship listings: for each get title, company, location, and application URL.
+            8. Return results as a JSON array with fields: title, company, location, url.
+            """
         else:
-            llm = ChatAnthropic(model=settings.llm_model, api_key=settings.anthropic_api_key)
-
-        task = f"""
-        1. Go to https://app.joinhandshake.com/login
-        2. Log in with email '{settings.handshake_email}' and password '{settings.handshake_password}'
-        3. Navigate to Jobs -> Internships filter
-        4. Extract the first 20 internship listings: for each get title, company, location, and application URL
-        5. Return results as a JSON array with fields: title, company, location, url
-        """
+            task = f"""
+            1. Go to https://app.joinhandshake.com/login
+            2. Log in with email '{settings.handshake_email}' and password '{settings.handshake_password}'
+            3. Navigate to Jobs -> Internships filter
+            4. Extract the first 20 internship listings: for each get title, company, location, and application URL
+            5. Return results as a JSON array with fields: title, company, location, url
+            """
 
         agent = Agent(task=task, llm=llm)
         result = await agent.run()

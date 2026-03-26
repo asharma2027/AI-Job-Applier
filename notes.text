@@ -1,3 +1,14 @@
 PERSONAL NOTES, IGNORE UNLESS REQUESTED
 Stuff to add:
 Stealth	Camoufox (optional)	Anti-fingerprint Playwright wrapper if bot detection becomes an issue.
+
+explore botfather to make it such that it can send me notifications when it is done with a task or if it needs my help (only for job applications that are time sensitive and require timely input to prevent time outs)
+
+
+
+
+
+# Re-sync deps (langchain-google-genai already installed)
+./run install
+# Launch
+./run

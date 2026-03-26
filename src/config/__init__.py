@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     # Credentials
     handshake_email: str = ""
     handshake_password: str = ""
+    uchicago_cnet_id: str = ""
+    uchicago_password: str = ""
     linkedin_email: str = ""
     linkedin_password: str = ""
 
@@ -81,4 +83,41 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-__all__ = ["Settings", "settings"]
+import os
+def update_env_file(updates: dict):
+    """Update the .env file iteratively to preserve comments and update memory settings."""
+    env_path = ".env"
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    
+    for k, v in updates.items():
+        key = k.upper()
+        found = False
+        for i, line in enumerate(lines):
+            line_str = line.strip()
+            if line_str.startswith(key + "=") or line_str.startswith(f"#{key}=") or line_str.startswith(f"# {key}="):
+                # keep indentation or just overwrite
+                lines[i] = f"{key}={v}\n"
+                found = True
+                break
+        if not found:
+            lines.append(f"{key}={v}\n")
+            
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    
+    # Update in-memory settings
+    for k, v in updates.items():
+        # Handle type casting for specific fields
+        if hasattr(settings, k):
+            if k == 'auto_submit':
+                v = str(v).lower() in ('true', '1', 't', 'y', 'yes')
+            elif k in ['scrape_interval_minutes', 'dashboard_port']:
+                v = int(v)
+            elif k == 'min_relevance_score':
+                v = float(v)
+            setattr(settings, k, v)
+
+__all__ = ["Settings", "settings", "update_env_file"]

@@ -145,6 +145,20 @@ async def get_stats():
     )
 
 
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/settings")
+async def get_settings():
+    from src.config import settings
+    # We can safely return the dump because this is a local dashboard
+    return settings.model_dump()
+
+@app.patch("/api/settings")
+async def update_settings_endpoint(updates: dict):
+    from src.config import settings, update_env_file
+    update_env_file(updates)
+    return settings.model_dump()
+
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 
 @app.get("/api/jobs", response_model=list[JobOut])

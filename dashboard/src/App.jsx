@@ -47,6 +47,7 @@ function Sidebar({ page, setPage, queueCount }) {
     { id: 'jobs', label: 'All Jobs', icon: '💼' },
     { id: 'memory', label: 'AI Memory', icon: '🧠' },
     { id: 'stats', label: 'Overview', icon: '📊' },
+    { id: 'settings', label: 'Settings', icon: '⚙️' },
   ]
   return (
     <aside className="sidebar">
@@ -554,6 +555,105 @@ function MemoryPage({ toast }) {
   )
 }
 
+// ── Settings Page ───────────────────────────────────────────────────────
+function SettingsPage({ toast }) {
+  const { data: settings, loading, refetch } = useApi(`${API}/settings`)
+  const [formData, setFormData] = useState({})
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (settings) setFormData(settings)
+  }, [settings])
+
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target
+    setFormData(p => ({ ...p, [name]: type === 'checkbox' ? checked : value }))
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const r = await fetch(`${API}/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      })
+      if (!r.ok) throw new Error('Failed to save settings')
+      toast('✅ Settings saved to .env', 'success')
+      refetch()
+    } catch (e) { toast('Error: ' + e.message, 'error') }
+    setSaving(false)
+  }
+
+  if (loading) return <div className="page-content empty"><div className="empty-icon spin">⚙️</div></div>
+
+  const Section = ({ title, desc, children }) => (
+    <div style={{ marginBottom: 32 }}>
+      <h3 style={{ marginBottom: 4, marginTop: 0 }}>{title}</h3>
+      {desc && <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16, marginTop: 0 }}>{desc}</p>}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>{children}</div>
+    </div>
+  )
+
+  const Field = ({ label, name, type = 'text', placeholder = '' }) => (
+    <div>
+      <label className="field-label">{label}</label>
+      {type === 'checkbox' ? (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14 }}>
+          <input type="checkbox" name={name} checked={!!formData[name]} onChange={handleChange} />
+          Enabled
+        </label>
+      ) : (
+        <input className="field-select" style={{ width: '100%', boxSizing: 'border-box' }} type={type} name={name} value={formData[name] ?? ''} onChange={handleChange} placeholder={placeholder} />
+      )}
+    </div>
+  )
+
+  return (
+    <div>
+      <div className="page-header">
+        <div><div className="page-title">Settings</div><div className="page-subtitle">Manage environment configuration</div></div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-ghost" onClick={refetch}>↻ Reload</button>
+          <button className="btn btn-success" disabled={saving} onClick={save}>{saving ? 'Saving...' : '💾 Save Changes'}</button>
+        </div>
+      </div>
+      <div className="page-content" style={{ maxWidth: 800 }}>
+        <Section title="AI Providers" desc="API keys for LLM services">
+          <Field label="Google API Key" name="google_api_key" type="password" />
+          <Field label="OpenAI API Key" name="openai_api_key" type="password" />
+          <Field label="Anthropic API Key" name="anthropic_api_key" type="password" />
+        </Section>
+        <Section title="Models" desc="Control which models handle which tasks">
+          <div>
+            <label className="field-label">LLM Provider</label>
+            <select className="field-select" name="llm_provider" value={formData.llm_provider || 'google'} onChange={handleChange} style={{ width: '100%', boxSizing: 'border-box' }}>
+              <option value="google">Google</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </div>
+          <Field label="Fast Model (Scraping, Filling)" name="llm_model_fast" />
+          <Field label="Quality Model (Analysis, Routing)" name="llm_model_quality" />
+        </Section>
+        <Section title="UChicago SSO Credentials" desc="For Handshake UChicago login">
+          <Field label="CNet ID" name="uchicago_cnet_id" />
+          <Field label="Password" name="uchicago_password" type="password" />
+        </Section>
+        <Section title="Standard Credentials" desc="Fallback or other job boards">
+          <Field label="Handshake Email" name="handshake_email" />
+          <Field label="Handshake Password" name="handshake_password" type="password" />
+        </Section>
+        <Section title="Pipeline Behavior" desc="Configure how the agent runs">
+          <Field label="Auto Submit Applications" name="auto_submit" type="checkbox" />
+          <Field label="Scraping Interval (minutes)" name="scrape_interval_minutes" type="number" />
+          <Field label="Minimum Relevance Score (0.0 - 1.0)" name="min_relevance_score" />
+        </Section>
+      </div>
+    </div>
+  )
+}
+
 // ── App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [page, setPage] = useState('queue')
@@ -568,6 +668,7 @@ export default function App() {
         {page === 'jobs' && <JobsPage toast={toast} />}
         {page === 'memory' && <MemoryPage toast={toast} />}
         {page === 'stats' && <OverviewPage />}
+        {page === 'settings' && <SettingsPage toast={toast} />}
       </main>
       <Toast toasts={toasts} />
     </div>
