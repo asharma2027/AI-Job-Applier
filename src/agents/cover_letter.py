@@ -1,16 +1,13 @@
 """
-Cover Letter Agent — Generates personalized cover letter drafts.
+Cover Letter Agent — prompt assembly mode (zero token spend).
 
-Uses user-demarcated boundaries in the template to identify which sections
-the LLM should rewrite. The rest of the template is preserved verbatim.
+Instead of calling an LLM to generate the cover letter, this agent:
+1. Reads the template with <<<SECTION>>> markers
+2. Analyzes the job description
+3. Assembles a rich, complete prompt with all context
+4. Stores it so the user can copy → paste into Gemini/Claude → paste result back
 
-Template boundary syntax:
-  <<<SECTION: section_name>>>
-  (existing content or instructions here)
-  <<<END_SECTION>>>
-
-The LLM will rewrite the content between these markers. Everything else
-in the template is kept exactly as-is.
+The "paste back" path parses the response and applies sections to the template.
 """
 from __future__ import annotations
 
@@ -19,169 +16,190 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from openai import AsyncOpenAI
-from sqlalchemy import select
-
+from src.memory.memory_store import build_rules_block, get_rules
 from src.config import settings
-from src.database import get_db
-from src.models import Job, JobStatus, CoverLetter, CoverLetterStatus
 
 logger = logging.getLogger(__name__)
 
-# Regex to find all demarcated sections
-SECTION_RE = re.compile(
-    r"<<<SECTION:\s*(?P<name>[^>]+)>>>\n(?P<content>.*?)<<<END_SECTION>>>",
-    re.DOTALL
+# ── Section parsing ─────────────────────────────────────────────────────────
+
+SECTION_PATTERN = re.compile(
+    r"<<<SECTION:\s*(?P<name>[^>]+)>>>\s*(?P<content>.*?)\s*<<<END_SECTION>>>",
+    re.DOTALL | re.IGNORECASE,
 )
 
 
 def parse_sections(template: str) -> dict[str, str]:
-    """
-    Extract all user-demarcated sections from the template.
-    Returns {section_name: existing_content}.
-    """
-    sections = {}
-    for match in SECTION_RE.finditer(template):
-        name = match.group("name").strip()
-        content = match.group("content").strip()
-        sections[name] = content
-    return sections
+    """Extract all <<SECTION>> boundaries from a template."""
+    return {
+        m.group("name").strip(): m.group("content").strip()
+        for m in SECTION_PATTERN.finditer(template)
+    }
 
 
 def apply_generated_sections(template: str, generated: dict[str, str]) -> str:
     """
-    Replace the content inside each <<<SECTION>>> with LLM-generated text.
-    Removes the boundary markers but preserves all other template text.
+    Replace <<<SECTION>>> blocks in template with generated content.
+    Removes the markers — output is clean prose.
     """
-    result = template
-    for name, new_content in generated.items():
-        pattern = re.compile(
-            rf"<<<SECTION:\s*{re.escape(name)}\s*>>>\n.*?<<<END_SECTION>>>",
-            re.DOTALL
-        )
-        result = pattern.sub(new_content, result)
-    return result
+    def replacer(m: re.Match) -> str:
+        name = m.group("name").strip()
+        return generated.get(name, m.group("content").strip())
+
+    result = SECTION_PATTERN.sub(replacer, template)
+    return result.strip()
 
 
-async def generate_section(
-    section_name: str,
-    existing_content: str,
-    job: Job,
-    client: AsyncOpenAI,
+# ── Prompt assembly ──────────────────────────────────────────────────────────
+
+def build_cover_letter_prompt(
+    job_title: str,
+    job_company: str,
+    job_description: str,
+    key_requirements: list[str],
+    resume_type: str,
+    template: str,
+    user_profile: Optional[dict] = None,
 ) -> str:
-    """Call LLM to generate a single cover letter section."""
-    prompt = f"""You are writing a section of a cover letter for a job application.
-
-Job Details:
-- Title: {job.title}
-- Company: {job.company}
-- Location: {job.location or 'N/A'}
-- Key Requirements: {', '.join(job.key_requirements or [])}
-
-Job Description:
-{(job.description or '')[:3000]}
-
-Section to write: "{section_name}"
-
-Current content / instructions for this section:
-{existing_content}
-
-Instructions:
-- Write ONLY the content for this specific section. Do not write a greeting, signature, or other sections.
-- Keep it concise (2-4 sentences max unless the section instructions say otherwise).
-- Be specific to this company and role — avoid generic filler.
-- Match a professional but authentic tone.
-- Output ONLY the text for this section, no labels or headers.
-"""
-    response = await client.chat.completions.create(
-        model=settings.llm_model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-        max_tokens=500,
-    )
-    return response.choices[0].message.content.strip()
-
-
-async def generate_cover_letter(job: Job) -> Optional[str]:
     """
-    Full cover letter generation for a job.
-    Returns the complete draft string, or None on failure.
+    Assemble a comprehensive prompt for the user to paste into any LLM.
+    This contains all the context needed to generate a great cover letter.
+    """
+    sections = parse_sections(template)
+    section_names = list(sections.keys())
+
+    # Memory rules for cover_letter agent
+    rules_block = build_rules_block("cover_letter")
+
+    profile_block = ""
+    if user_profile:
+        profile_block = f"""
+## My Background
+- **Name:** {user_profile.get('name', '[Your Name]')}
+- **Email:** {user_profile.get('email', '[Your Email]')}
+- **Education:** {user_profile.get('education', {}).get('degree', '')} from {user_profile.get('education', {}).get('school', '')}
+- **GPA:** {user_profile.get('education', {}).get('gpa', '')}
+- **Resume Category:** {resume_type}
+- **Relevant Experience:** {', '.join(user_profile.get('experience', [])[:3])}
+- **Skills:** {', '.join(user_profile.get('skills', [])[:10])}
+"""
+
+    requirements_block = ""
+    if key_requirements:
+        requirements_block = "\n## Key Requirements Identified\n" + "\n".join(
+            f"- {r}" for r in key_requirements[:8]
+        )
+
+    section_instructions = "\n".join([
+        f"- **{name}**: Rewrite this section to align with the job. Keep it natural and specific."
+        for name in section_names
+    ])
+
+    prompt = f"""# Cover Letter Generation Task
+
+## Job Details
+- **Position:** {job_title}
+- **Company:** {job_company}
+
+## Full Job Description
+{job_description}
+{requirements_block}
+{profile_block}
+{rules_block}
+
+---
+
+## Your Task
+
+Below is my cover letter template. It has special markers like `<<<SECTION: name>>>` and `<<<END_SECTION>>>` around sections I want you to rewrite.
+
+**YOU MUST:**
+1. Rewrite ONLY the content between `<<<SECTION: name>>>` and `<<<END_SECTION>>>` markers
+2. Keep the exact markers in your response so I can parse your output
+3. Do NOT change any text outside the markers
+4. Keep language natural, specific to this company, and non-generic
+5. Each rewritten section should be 2-5 sentences
+
+**Sections to rewrite:**
+{section_instructions}
+
+## Template (return this entire block with sections rewritten):
+
+{template}
+
+---
+Return ONLY the complete template text above with the section contents replaced. Do not add any commentary before or after.
+"""
+    return prompt.strip()
+
+
+# ── Paste-back parsing ───────────────────────────────────────────────────────
+
+def apply_pasted_response(template: str, pasted_response: str) -> tuple[str, dict[str, str]]:
+    """
+    Parse the user's pasted LLM response and apply section replacements to the template.
+
+    Returns:
+        (merged_draft: str, changed_sections: dict)
+    """
+    # Try to extract sections from the pasted response
+    generated = {
+        m.group("name").strip(): m.group("content").strip()
+        for m in SECTION_PATTERN.finditer(pasted_response)
+    }
+
+    if not generated:
+        # If no markers found, treat the entire pasted text as the cover letter
+        logger.warning("[cover_letter] No section markers found in pasted response — using as-is")
+        return pasted_response.strip(), {}
+
+    merged = apply_generated_sections(template, generated)
+    return merged, generated
+
+
+# ── Main entry point ─────────────────────────────────────────────────────────
+
+async def prepare_cover_letter_prompt(job: dict, profile: Optional[dict] = None) -> str:
+    """
+    Called by the orchestrator. Builds and returns the cover-letter prompt.
+    No LLM call is made here.
     """
     template_path = settings.cover_letter_template
-    if not template_path.exists():
-        logger.error(f"[cover_letter] Template not found: {template_path}")
-        return None
+    if template_path.exists():
+        template = template_path.read_text()
+    else:
+        template = _default_template()
 
-    template = template_path.read_text(encoding="utf-8")
-    sections = parse_sections(template)
-
-    if not sections:
-        logger.warning(
-            "[cover_letter] No <<<SECTION>>> markers found in template. "
-            "Using template as-is with only company/job substitution."
-        )
-        # Fall back to simple variable substitution
-        draft = template.replace("{{company}}", job.company)
-        draft = draft.replace("{{title}}", job.title)
-        return draft
-
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-    generated: dict[str, str] = {}
-
-    for section_name, existing_content in sections.items():
-        logger.info(f"[cover_letter] Generating section '{section_name}' for job {job.id}")
-        try:
-            generated[section_name] = await generate_section(
-                section_name, existing_content, job, client
-            )
-        except Exception as e:
-            logger.error(f"[cover_letter] Failed to generate section '{section_name}': {e}")
-            generated[section_name] = existing_content  # fall back to original
-
-    draft = apply_generated_sections(template, generated)
-    return draft
+    return build_cover_letter_prompt(
+        job_title=job.get("title", ""),
+        job_company=job.get("company", ""),
+        job_description=job.get("description", ""),
+        key_requirements=job.get("key_requirements") or [],
+        resume_type=job.get("resume_type", "general"),
+        template=template,
+        user_profile=profile,
+    )
 
 
-async def run_cover_letter_agent() -> int:
-    """
-    Generates cover letter drafts for all jobs with status 'drafting_cl'.
-    Returns the number of drafts created.
-    """
-    logger.info("[cover_letter] Starting cover letter generation run...")
-    created = 0
+def _default_template() -> str:
+    return """Dear Hiring Team,
 
-    async with get_db() as db:
-        result = await db.execute(select(Job).where(Job.status == JobStatus.drafting_cl))
-        jobs = result.scalars().all()
+<<<SECTION: opening>>>
+I am writing to express my strong interest in this position.
+<<<END_SECTION>>>
 
-    logger.info(f"[cover_letter] {len(jobs)} jobs need cover letters")
+<<<SECTION: why_company>>>
+I am particularly drawn to your company's mission and the work your team does.
+<<<END_SECTION>>>
 
-    for job in jobs:
-        draft = await generate_cover_letter(job)
-        if not draft:
-            logger.error(f"[cover_letter] Failed for job {job.id}. Will retry next run.")
-            continue
+<<<SECTION: relevant_experience>>>
+Through my academic and professional experiences, I have developed skills directly relevant to this role.
+<<<END_SECTION>>>
 
-        async with get_db() as db:
-            job_db = await db.get(Job, job.id)
-            job_db.status = JobStatus.awaiting_review
+<<<SECTION: closing>>>
+I would welcome the opportunity to discuss how my background aligns with your needs. Thank you for your consideration.
+<<<END_SECTION>>>
 
-            # Get section names that were generated
-            template = settings.cover_letter_template.read_text(encoding="utf-8")
-            sections = parse_sections(template)
-
-            cl = CoverLetter(
-                job_id=job.id,
-                draft_content=draft,
-                modified_sections={name: {} for name in sections.keys()},
-                status=CoverLetterStatus.pending,
-            )
-            db.add(cl)
-            created += 1
-
-        logger.info(
-            f"[cover_letter] Draft created for '{job.title}' at {job.company}"
-        )
-
-    logger.info(f"[cover_letter] Done. Created {created} drafts.")
-    return created
+Sincerely,
+[Your Name]
+"""

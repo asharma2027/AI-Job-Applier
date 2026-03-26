@@ -1,10 +1,14 @@
 """
 FastAPI backend for the job application review dashboard.
+Includes: cover letter queue, prompt copy/paste workflow, screenshotviewing,
+memory rule CRUD, and stats.
 """
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Response
@@ -19,7 +23,7 @@ from src.models import Job, JobStatus, CoverLetter, CoverLetterStatus, Applicati
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Job Applier Dashboard", version="0.1.0")
+app = FastAPI(title="Job Applier Dashboard", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,23 +40,21 @@ async def startup():
     logger.info("Database initialized.")
 
 
-# ─────────────────────────────────────────────
-# Response Schemas
-# ─────────────────────────────────────────────
+# ── Response Schemas ──────────────────────────────────────────────────────────
+
 class JobOut(BaseModel):
     id: int
     title: str
     company: str
-    location: Optional[str]
+    location: Optional[str] = None
     url: str
     source: str
     status: str
-    resume_type: Optional[str]
-    cover_letter_required: Optional[bool]
-    relevance_score: Optional[float]
-    key_requirements: Optional[list]
+    resume_type: Optional[str] = None
+    cover_letter_required: Optional[bool] = None
+    relevance_score: Optional[float] = None
+    key_requirements: Optional[list] = None
     created_at: datetime
-
     class Config:
         from_attributes = True
 
@@ -63,18 +65,22 @@ class CoverLetterOut(BaseModel):
     job_title: str
     job_company: str
     draft_content: str
-    approved_content: Optional[str]
+    prompt_content: Optional[str] = None
+    approved_content: Optional[str] = None
     status: str
-    modified_sections: Optional[dict]
+    modified_sections: Optional[dict] = None
     created_at: datetime
-
     class Config:
         from_attributes = True
 
 
 class ApproveRequest(BaseModel):
-    content: str  # final approved content (may be edited by user)
-    action: str   # "approve" | "reject"
+    content: str
+    action: str  # "approve" | "reject"
+
+
+class PasteRequest(BaseModel):
+    pasted_response: str  # Raw LLM output from user
 
 
 class StatsOut(BaseModel):
@@ -87,15 +93,27 @@ class StatsOut(BaseModel):
     total_skipped: int
 
 
-# ─────────────────────────────────────────────
-# Stats
-# ─────────────────────────────────────────────
+class RuleIn(BaseModel):
+    agent: str
+    description: str
+    correction: str
+    example_bad: str = ""
+    severity: str = "medium"
+
+
+class RuleUpdate(BaseModel):
+    description: Optional[str] = None
+    correction: Optional[str] = None
+    example_bad: Optional[str] = None
+    severity: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
 @app.get("/api/stats", response_model=StatsOut)
 async def get_stats():
     async with get_db() as db:
-        def count(status):
-            return func.count(Job.id).filter(Job.status == status)
-
         total = (await db.execute(select(func.count(Job.id)))).scalar()
         analyzed = (await db.execute(
             select(func.count(Job.id)).where(Job.status.notin_([JobStatus.new, JobStatus.analyzing]))
@@ -127,9 +145,8 @@ async def get_stats():
     )
 
 
-# ─────────────────────────────────────────────
-# Jobs
-# ─────────────────────────────────────────────
+# ── Jobs ──────────────────────────────────────────────────────────────────────
+
 @app.get("/api/jobs", response_model=list[JobOut])
 async def list_jobs(status: Optional[str] = None, limit: int = 100, offset: int = 0):
     async with get_db() as db:
@@ -141,8 +158,7 @@ async def list_jobs(status: Optional[str] = None, limit: int = 100, offset: int 
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
         result = await db.execute(query)
-        jobs = result.scalars().all()
-    return jobs
+        return result.scalars().all()
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobOut)
@@ -154,12 +170,30 @@ async def get_job(job_id: int):
     return job
 
 
-# ─────────────────────────────────────────────
-# Cover Letter Review Queue
-# ─────────────────────────────────────────────
+@app.get("/api/jobs/{job_id}/screenshots")
+async def get_screenshots(job_id: int):
+    """Return list of screenshot paths for a job's application."""
+    async with get_db() as db:
+        result = await db.execute(select(Application).where(Application.job_id == job_id))
+        app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return {"screenshots": app.screenshot_paths or []}
+
+
+@app.get("/api/screenshots/view")
+async def view_screenshot(path: str):
+    """Serve a screenshot image by absolute path."""
+    p = Path(path)
+    if not p.exists() or not p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+    return FileResponse(path)
+
+
+# ── Cover Letter Queue ────────────────────────────────────────────────────────
+
 @app.get("/api/queue", response_model=list[CoverLetterOut])
 async def list_queue():
-    """Return all pending cover letters for review."""
     async with get_db() as db:
         result = await db.execute(
             select(CoverLetter, Job)
@@ -169,20 +203,21 @@ async def list_queue():
         )
         rows = result.all()
 
-    out = []
-    for cl, job in rows:
-        out.append(CoverLetterOut(
+    return [
+        CoverLetterOut(
             id=cl.id,
             job_id=cl.job_id,
             job_title=job.title,
             job_company=job.company,
             draft_content=cl.draft_content,
+            prompt_content=cl.prompt_content,
             approved_content=cl.approved_content,
             status=cl.status,
             modified_sections=cl.modified_sections,
             created_at=cl.created_at,
-        ))
-    return out
+        )
+        for cl, job in rows
+    ]
 
 
 @app.get("/api/queue/{cl_id}", response_model=CoverLetterOut)
@@ -193,21 +228,53 @@ async def get_queue_item(cl_id: int):
             raise HTTPException(status_code=404, detail="Cover letter not found")
         job = await db.get(Job, cl.job_id)
     return CoverLetterOut(
-        id=cl.id,
-        job_id=cl.job_id,
-        job_title=job.title,
-        job_company=job.company,
-        draft_content=cl.draft_content,
-        approved_content=cl.approved_content,
-        status=cl.status,
-        modified_sections=cl.modified_sections,
-        created_at=cl.created_at,
+        id=cl.id, job_id=cl.job_id, job_title=job.title, job_company=job.company,
+        draft_content=cl.draft_content, prompt_content=cl.prompt_content,
+        approved_content=cl.approved_content, status=cl.status,
+        modified_sections=cl.modified_sections, created_at=cl.created_at,
     )
+
+
+@app.get("/api/queue/{cl_id}/prompt")
+async def get_prompt(cl_id: int):
+    """Return the copy-ready LLM prompt for this cover letter."""
+    async with get_db() as db:
+        cl = await db.get(CoverLetter, cl_id)
+        if not cl:
+            raise HTTPException(status_code=404, detail="Cover letter not found")
+    return {"prompt": cl.prompt_content or "No prompt generated yet."}
+
+
+@app.post("/api/queue/{cl_id}/paste")
+async def paste_response(cl_id: int, body: PasteRequest):
+    """
+    Accept a pasted LLM response, parse sections, apply to template, and
+    store the merged draft for user review.
+    """
+    async with get_db() as db:
+        cl = await db.get(CoverLetter, cl_id)
+        if not cl:
+            raise HTTPException(status_code=404, detail="Cover letter not found")
+
+    from src.config import settings
+    from src.agents.cover_letter import apply_pasted_response
+
+    template_path = settings.cover_letter_template
+    template = template_path.read_text() if template_path.exists() else cl.draft_content
+
+    merged, sections = apply_pasted_response(template, body.pasted_response)
+
+    async with get_db() as db:
+        cl = await db.get(CoverLetter, cl_id)
+        cl.draft_content = merged
+        cl.modified_sections = sections
+
+    return {"draft_content": merged, "sections_applied": list(sections.keys())}
 
 
 @app.put("/api/queue/{cl_id}")
 async def review_cover_letter(cl_id: int, body: ApproveRequest):
-    """Approve or reject a cover letter. Updates job status accordingly."""
+    """Approve or reject a cover letter."""
     async with get_db() as db:
         cl = await db.get(CoverLetter, cl_id)
         if not cl:
@@ -229,15 +296,58 @@ async def review_cover_letter(cl_id: int, body: ApproveRequest):
     return {"status": "ok", "action": body.action}
 
 
-# ─────────────────────────────────────────────
-# Serve dashboard SPA (if built)
-# ─────────────────────────────────────────────
-import os
-_dashboard_dist = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
+# ── Memory / Correction Rules ─────────────────────────────────────────────────
+
+@app.get("/api/memory")
+async def get_all_rules():
+    """Return all correction rules for all agents."""
+    from src.memory.memory_store import get_all_rules
+    return get_all_rules()
+
+
+@app.post("/api/memory")
+async def create_rule(body: RuleIn):
+    """Create a new correction rule."""
+    from src.memory.memory_store import add_rule
+    agents = {"analyzer", "cover_letter", "executor", "sourcer"}
+    if body.agent not in agents:
+        raise HTTPException(status_code=400, detail=f"agent must be one of {agents}")
+    rule = add_rule(
+        agent=body.agent,
+        description=body.description,
+        correction=body.correction,
+        example_bad=body.example_bad,
+        severity=body.severity,
+    )
+    return rule
+
+
+@app.patch("/api/memory/{rule_id}")
+async def update_rule(rule_id: str, body: RuleUpdate):
+    """Update fields on an existing rule."""
+    from src.memory.memory_store import update_rule
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    rule = update_rule(rule_id, **updates)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return rule
+
+
+@app.delete("/api/memory/{rule_id}")
+async def delete_rule(rule_id: str):
+    """Delete a correction rule."""
+    from src.memory.memory_store import delete_rule
+    if not delete_rule(rule_id):
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return {"status": "deleted"}
+
+
+# ── Serve dashboard SPA ───────────────────────────────────────────────────────
+
+_dashboard_dist = os.path.join(os.path.dirname(__file__), "..", "..", "dashboard", "dist")
 if os.path.isdir(_dashboard_dist):
     app.mount("/assets", StaticFiles(directory=os.path.join(_dashboard_dist, "assets")), name="assets")
 
-    @app.get("/{full_path:path}")
+    @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
-        index = os.path.join(_dashboard_dist, "index.html")
-        return FileResponse(index)
+        return FileResponse(os.path.join(_dashboard_dist, "index.html"))

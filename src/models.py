@@ -82,6 +82,9 @@ class CoverLetter(Base):
     # Final content after user edits (same as draft if not edited)
     approved_content: Mapped[Optional[str]] = mapped_column(Text)
 
+    # The copy-paste workflow: assembled prompt for user to feed into any LLM
+    prompt_content: Mapped[Optional[str]] = mapped_column(Text)
+
     # Which sections were modified and what the AI generated for each
     # Format: {"section_name": {"original_boundary": "...", "generated": "..."}}
     modified_sections: Mapped[Optional[dict]] = mapped_column(JSON)
@@ -106,7 +109,7 @@ class Application(Base):
     )
 
     # Execution details
-    screenshot_path: Mapped[Optional[str]] = mapped_column(String(1024))
+    screenshot_paths: Mapped[Optional[list]] = mapped_column(JSON)  # list of paths per page
     confirmation_text: Mapped[Optional[str]] = mapped_column(Text)
     error_log: Mapped[Optional[str]] = mapped_column(Text)
 
