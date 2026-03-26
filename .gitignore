@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.env
+
+# Secrets
+.env
+*.env*
+!.env.example
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Browser session data / cookies
+browser_data/
+session_data/
+cookies/
+
+# Documents (user's resumes - tracked separately)
+src/resumes/*.pdf
+!src/resumes/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Screenshots / application records
+records/
+screenshots/
+
+# Node / dashboard
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
