@@ -20,6 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from src.config import settings
 from src.database import init_db
 from src.orchestrator import run_pipeline_once
+from src.activity import install_activity_handler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +28,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+install_activity_handler()
 
 
 async def run_scheduler():
