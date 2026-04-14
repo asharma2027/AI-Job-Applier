@@ -68,6 +68,18 @@ case "${1:-}" in
       echo ""
     fi
 
+    # Ensure dashboard is built and watch for changes in the background
+    if [ -d "dashboard" ] && command -v npm &>/dev/null; then
+      if [ ! -d "dashboard/dist" ]; then
+        info "Building dashboard..."
+        (cd dashboard && npm run build) && ok "Dashboard built."
+      fi
+      info "Watching dashboard for changes (auto-rebuild on save)..."
+      (cd dashboard && npm run build -- --watch 2>&1 | grep -v "^$") &
+      DASHBOARD_WATCHER_PID=$!
+      trap "kill $DASHBOARD_WATCHER_PID 2>/dev/null" EXIT
+    fi
+
     bold "🤖 Launching Job Applier Agent..."
     echo ""
     info "Dashboard → http://localhost:8000"

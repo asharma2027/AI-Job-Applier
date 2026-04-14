@@ -1,25 +1,24 @@
 """
-Main entry point — starts the background agent + FastAPI dashboard concurrently.
+Main entry point — starts the FastAPI dashboard.
+
+All agent actions (sourcing, analysis, drafting, filling, submitting) are
+triggered explicitly from the dashboard. No LLM calls happen on startup.
 
 Usage:
-    python -m src.main              # run both scheduler and dashboard
-    python -m src.main --api-only   # run only the dashboard
-    python -m src.main --run-once   # run the pipeline once and exit
+    python -m src.main              # start the dashboard API
+    python -m src.main --run-once   # run the full pipeline once and exit
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import sys
-from contextlib import asynccontextmanager
 
 import click
 import uvicorn
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.config import settings
 from src.database import init_db
-from src.orchestrator import run_pipeline_once
 from src.activity import install_activity_handler
 
 logging.basicConfig(
@@ -30,36 +29,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 install_activity_handler()
-
-
-async def run_scheduler():
-    """Start the APScheduler to run the pipeline periodically."""
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        run_pipeline_once,
-        trigger="interval",
-        minutes=settings.scrape_interval_minutes,
-        id="pipeline",
-        name="Job Application Pipeline",
-        replace_existing=True,
-        max_instances=1,
-    )
-    scheduler.start()
-    logger.info(
-        f"Scheduler started. Pipeline will run every {settings.scrape_interval_minutes} minutes."
-    )
-
-    # Run immediately on startup
-    logger.info("Running initial pipeline pass...")
-    await run_pipeline_once()
-
-    # Keep running
-    try:
-        while True:
-            await asyncio.sleep(60)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        scheduler.shutdown()
-        logger.info("Scheduler stopped.")
 
 
 async def run_api():
@@ -79,26 +48,20 @@ async def run_api():
 
 
 @click.command()
-@click.option("--api-only", is_flag=True, help="Run only the dashboard API.")
 @click.option("--run-once", is_flag=True, help="Run the pipeline once and exit.")
-def main(api_only: bool, run_once: bool):
+def main(run_once: bool):
     async def _main():
         await init_db()
 
         if run_once:
             logger.info("Running pipeline once...")
+            from src.orchestrator import run_pipeline_once
             result = await run_pipeline_once()
             logger.info(f"Pipeline result: {result}")
             return
 
-        if api_only:
-            await run_api()
-        else:
-            # Run both concurrently
-            await asyncio.gather(
-                run_scheduler(),
-                run_api(),
-            )
+        logger.info("Starting in dashboard mode. All agent actions are manual.")
+        await run_api()
 
     asyncio.run(_main())
 

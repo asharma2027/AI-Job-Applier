@@ -1,7 +1,11 @@
 """
-Job Sourcing Agent — Crawl4AI + browser-use to gather listings from:
-  - Handshake (authenticated browser session)
-  - LinkedIn, Indeed, WellFound (public Crawl4AI)
+Job Sourcing Agent — manual per-platform scraping triggered from the dashboard.
+
+Active platforms:
+  - Handshake (authenticated SSO browser session via browser-use)
+
+Disabled platforms (buttons shown but not yet implemented):
+  - LinkedIn, Indeed, WellFound, Glassdoor
 """
 from __future__ import annotations
 
@@ -10,7 +14,6 @@ import json
 import logging
 from typing import Optional
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, LLMExtractionStrategy
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -21,9 +24,6 @@ from src.models import Job, JobStatus
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────
-# Pydantic schema for extracted job listing
-# ─────────────────────────────────────────────
 class JobListing(BaseModel):
     title: str
     company: str
@@ -32,128 +32,148 @@ class JobListing(BaseModel):
     description: Optional[str] = None
 
 
-# ─────────────────────────────────────────────
-# Public board scrapers via Crawl4AI
-# ─────────────────────────────────────────────
-PUBLIC_BOARD_URLS = {
-    "linkedin": "https://www.linkedin.com/jobs/search/?keywords=internship&f_JT=I&f_TP=1",
-    "indeed": "https://www.indeed.com/jobs?q=internship&jt=internship",
-    "wellfound": "https://wellfound.com/jobs?jobType=internship",
-    "glassdoor": "https://www.glassdoor.com/Job/internship-jobs-SRCH_KO0,10.htm",
-}
-
-
-async def scrape_public_board(source: str, url: str) -> list[JobListing]:
-    """Use Crawl4AI with LLM extraction to pull listings from a public board."""
-    extraction_strategy = LLMExtractionStrategy(
-        provider=f"{settings.llm_provider}/{settings.llm_model}",
-        api_token=settings.openai_api_key or settings.anthropic_api_key,
-        schema=JobListing.model_json_schema(),
-        extraction_type="schema",
-        instruction=(
-            "Extract all internship job listings from this page. "
-            "For each listing, extract the job title, company name, location, "
-            "application URL (the link to the full job posting), and a brief description if visible. "
-            "Return as a JSON array."
-        ),
-    )
-
-    browser_cfg = BrowserConfig(headless=True, verbose=False)
-    run_cfg = CrawlerRunConfig(extraction_strategy=extraction_strategy)
-
-    listings: list[JobListing] = []
-    try:
-        async with AsyncWebCrawler(config=browser_cfg) as crawler:
-            result = await crawler.arun(url=url, config=run_cfg)
-            if result.extracted_content:
-                raw = json.loads(result.extracted_content)
-                if isinstance(raw, list):
-                    for item in raw:
-                        try:
-                            listings.append(JobListing(**item))
-                        except Exception:
-                            pass
-    except Exception as e:
-        logger.error(f"[sourcer] Failed to scrape {source}: {e}")
-
-    logger.info(f"[sourcer] {source}: found {len(listings)} listings")
-    return listings
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Handshake — UChicago SSO + Duo MFA aware
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def scrape_handshake() -> list[JobListing]:
     """
-    Scrape Handshake using browser-use with authenticated session.
-    Falls back gracefully if credentials not set.
+    Scrape Handshake using browser-use with UChicago SSO login.
+
+    The login flow is:
+      1. Handshake → "College Students and Alumni" → identity.uchicago.edu
+      2. CNet ID + password on UChicago's SSO page
+      3. Duo Mobile push — agent waits patiently (step_timeout=300s) for approval
+      4. Extract internship listings
     """
     use_sso = bool(settings.uchicago_cnet_id and settings.uchicago_password)
-    
+
     if not use_sso and (not settings.handshake_email or not settings.handshake_password):
-        logger.warning("[sourcer] Handshake credentials not set. Skipping.")
+        logger.warning("[sourcer] Handshake credentials not configured. Set UCHICAGO_CNET_ID / UCHICAGO_PASSWORD in .env")
         return []
 
     try:
         from browser_use import Agent
-        
-        # Use config's fast LLM instance
-        llm = settings.get_llm_fast()
+    except ImportError:
+        logger.warning("[sourcer] browser-use not installed")
+        return []
 
-        if use_sso:
-            task = f"""
-            1. Go to https://uchicago.joinhandshake.com/login
-            2. Click on "College Students and Alumni login".
-            3. Type '{settings.uchicago_cnet_id}', hit enter to advance to the next page.
-            4. Switch focus to the password field, enter '{settings.uchicago_password}', hit enter to advance.
-            5. IMPORTANT: You will reach a Duo Mobile authentication screen where a code is displayed. You MUST wait patiently for the user to type the code shown on the screen into the Duo Mobile app on their phone. Do NOT attempt to bypass or guess. Wait until the page automatically advances past the login flow.
-            6. Once securely logged into Handshake, navigate to Jobs -> Internships filter.
-            7. Extract the first 20 internship listings: for each get title, company, location, and application URL.
-            8. Return results as a JSON array with fields: title, company, location, url.
-            """
-        else:
-            task = f"""
-            1. Go to https://app.joinhandshake.com/login
-            2. Log in with email '{settings.handshake_email}' and password '{settings.handshake_password}'
-            3. Navigate to Jobs -> Internships filter
-            4. Extract the first 20 internship listings: for each get title, company, location, and application URL
-            5. Return results as a JSON array with fields: title, company, location, url
-            """
+    llm = settings.get_browser_use_llm_for_task("sourcer")
 
-        agent = Agent(task=task, llm=llm)
+    if use_sso:
+        task = f"""
+You are logging into Handshake using University of Chicago SSO credentials and extracting internship listings.
+
+LOGIN FLOW — follow each step precisely:
+
+1. Navigate to: https://uchicago.joinhandshake.com/login
+2. Look for and click the button/link labelled "College Students and Alumni login" or "Sign in with your institution".
+3. You will land on an institution search page. Type "University of Chicago" and select it if prompted, then proceed.
+4. On the UChicago identity page (identity.uchicago.edu or similar):
+   a. Enter the CNet ID: {settings.uchicago_cnet_id}
+   b. If it asks for email format, use: {settings.uchicago_cnet_id}@uchicago.edu
+   c. Click Next / Continue.
+5. Enter the password: {settings.uchicago_password}
+   Click Sign In / Login.
+6. DUO MOBILE MFA — CRITICAL WAITING STEP:
+   You will see a Duo Security two-factor authentication screen.
+   DO NOT click anything or try to bypass Duo.
+   The user will approve the Duo Mobile push notification on their phone.
+   Simply WAIT — this may take 1 to 3 minutes. The page will automatically advance once approved.
+   If you see a "Send Push" button, click it once to send the push, then wait.
+7. Once back on Handshake (you are logged in), navigate to: Jobs section.
+8. Apply the "Internship" job type filter.
+9. Scroll through the first 2 pages of results.
+10. For each listing visible, extract:
+    - title (job title)
+    - company (employer name)
+    - location (city or "Remote")
+    - url (the full URL to that specific job posting on Handshake)
+11. Return ALL extracted listings as a single JSON array with this exact format:
+    [{{"title": "...", "company": "...", "location": "...", "url": "https://..."}}]
+    Include ONLY the JSON array in your final answer — no other text.
+"""
+    else:
+        task = f"""
+You are logging into Handshake and extracting internship listings.
+
+LOGIN FLOW:
+1. Navigate to: https://app.joinhandshake.com/login
+2. Enter email: {settings.handshake_email}
+3. Enter password: {settings.handshake_password}
+4. Complete login.
+5. Navigate to Jobs and filter by Internships.
+6. Scroll through the first 2 pages of results.
+7. For each listing extract: title, company, location, url.
+8. Return ALL extracted listings as a JSON array:
+   [{{"title": "...", "company": "...", "location": "...", "url": "https://..."}}]
+   Only the JSON array in your final answer.
+"""
+
+    try:
+        # step_timeout=300 gives 5 minutes per step — critical for the Duo wait
+        agent = Agent(task=task, llm=llm, step_timeout=300)
         result = await agent.run()
 
-        # Parse the agent's output (it should return JSON)
         listings: list[JobListing] = []
         if result and result.final_result():
             raw_text = result.final_result()
-            try:
-                # Find JSON array in the output
-                start = raw_text.find("[")
-                end = raw_text.rfind("]") + 1
-                if start != -1 and end > start:
-                    items = json.loads(raw_text[start:end])
-                    for item in items:
-                        if isinstance(item, dict) and "url" in item:
-                            item.setdefault("description", None)
-                            try:
-                                listings.append(JobListing(**item))
-                            except Exception:
-                                pass
-            except json.JSONDecodeError:
-                pass
+            start = raw_text.find("[")
+            end = raw_text.rfind("]") + 1
+            if start != -1 and end > start:
+                items = json.loads(raw_text[start:end])
+                for item in items:
+                    if isinstance(item, dict) and "url" in item and "title" in item:
+                        item.setdefault("description", None)
+                        try:
+                            listings.append(JobListing(**item))
+                        except Exception:
+                            pass
 
         logger.info(f"[sourcer] Handshake: found {len(listings)} listings")
         return listings
 
-    except ImportError:
-        logger.warning("[sourcer] browser-use not installed. Install with: pip install browser-use")
-        return []
     except Exception as e:
         logger.error(f"[sourcer] Handshake scrape failed: {e}")
         return []
 
 
-# ─────────────────────────────────────────────
-# Deduplicate and persist to DB
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Public board stubs — disabled until proxies / auth are configured
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def scrape_linkedin() -> list[JobListing]:
+    logger.warning("[sourcer] LinkedIn scraping is currently disabled.")
+    return []
+
+async def scrape_indeed() -> list[JobListing]:
+    logger.warning("[sourcer] Indeed scraping is currently disabled.")
+    return []
+
+async def scrape_wellfound() -> list[JobListing]:
+    logger.warning("[sourcer] WellFound scraping is currently disabled.")
+    return []
+
+async def scrape_glassdoor() -> list[JobListing]:
+    logger.warning("[sourcer] Glassdoor scraping is currently disabled.")
+    return []
+
+
+PLATFORM_SCRAPERS = {
+    "handshake": scrape_handshake,
+    "linkedin": scrape_linkedin,
+    "indeed": scrape_indeed,
+    "wellfound": scrape_wellfound,
+    "glassdoor": scrape_glassdoor,
+}
+
+ENABLED_PLATFORMS = {"handshake"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Persistence
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def persist_listings(listings: list[JobListing], source: str) -> int:
     """Insert new job listings into the DB, skipping duplicates. Returns count of new jobs."""
     new_count = 0
@@ -179,29 +199,28 @@ async def persist_listings(listings: list[JobListing], source: str) -> int:
     return new_count
 
 
-async def run_sourcer() -> int:
+# ─────────────────────────────────────────────────────────────────────────────
+# Public entry point — called by the dashboard per-platform button
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_platform_scrape(platform: str) -> dict:
     """
-    Main sourcing pipeline. Scrapes all configured job boards and persists results.
-    Returns total number of new jobs discovered.
+    Scrape a single platform and persist results.
+    Returns a summary dict: {platform, found, new_jobs, error}.
     """
-    logger.info("[sourcer] Starting sourcing run...")
-    total_new = 0
+    if platform not in PLATFORM_SCRAPERS:
+        return {"platform": platform, "found": 0, "new_jobs": 0, "error": f"Unknown platform: {platform}"}
 
-    # Run public board scrapes concurrently
-    tasks = [scrape_public_board(source, url) for source, url in PUBLIC_BOARD_URLS.items()]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    if platform not in ENABLED_PLATFORMS:
+        return {"platform": platform, "found": 0, "new_jobs": 0, "error": f"{platform} is not yet enabled"}
 
-    for source, result in zip(PUBLIC_BOARD_URLS.keys(), results):
-        if isinstance(result, Exception):
-            logger.error(f"[sourcer] {source} failed: {result}")
-            continue
-        new = await persist_listings(result, source)
-        total_new += new
-
-    # Handshake (sequential — requires authenticated session)
-    handshake_listings = await scrape_handshake()
-    new = await persist_listings(handshake_listings, "handshake")
-    total_new += new
-
-    logger.info(f"[sourcer] Run complete. Total new jobs: {total_new}")
-    return total_new
+    logger.info(f"[sourcer] Starting scrape: {platform}")
+    try:
+        scraper = PLATFORM_SCRAPERS[platform]
+        listings = await scraper()
+        new_jobs = await persist_listings(listings, platform)
+        logger.info(f"[sourcer] {platform}: {len(listings)} found, {new_jobs} new")
+        return {"platform": platform, "found": len(listings), "new_jobs": new_jobs, "error": None}
+    except Exception as e:
+        logger.error(f"[sourcer] {platform} failed: {e}")
+        return {"platform": platform, "found": 0, "new_jobs": 0, "error": str(e)}

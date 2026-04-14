@@ -1,0 +1,18 @@
+notes.txt
+notes.text
+
+# Common exclusions
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+*.db
+*.sqlite3
+node_modules/
+.DS_Store
+.git/
+.vscode/
+.idea/
+.pytest_cache/

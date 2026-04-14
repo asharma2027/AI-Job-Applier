@@ -1,14 +1,121 @@
 PERSONAL NOTES, IGNORE UNLESS REQUESTED
-Stuff to add:
-Stealth	Camoufox (optional)	Anti-fingerprint Playwright wrapper if bot detection becomes an issue.
 
+my cover letter that i uploaded is not exactly a template its rather just a pdf example of a cover letter I used to apply to one specific role. tell me how i can change it to be a template (so the AI smartly decides what parts to edit and what parts not to edit and re-evaluate whether the current system of demarcating editable / non-editable sections is too strict and whether its too hard to come up with a generalizable editable template for cover letters for one industry in general since the structure of cover letter should be changed to fit the specific job role (or perhaps this is possible since some stuff actually does remain constant across all cover letters in a single industry, think about it really carefully and decide whats the best approach, taking inspiration from the way that this is currently done by leading tools / companies --> IMPORTANTLY: DO A WEB SEARCH FOR ALL OF THE LATEST RELEVANT LITERATURE ON THE TOPIC AND ALSO CHECK WHAT OTHER MAJOR COMPANIES AND TOOLS ARE DOING TO SOLVE THIS PROBLEM TO INFORM YOUR TECHNICAL IMPLEMENTATION PROPOSAL))
+
+ALSO IMPORTANTLY: make the cover letter template customization stuff very simple to configure in the dashboard and properly display the pdf as it will actually appear to employers before being submitted. then give me everything else i need to add or change to actually start testing the tool out to see if it works (BUT IMPORTANTLY: DO NOT ACTUALLY LET IT SUBMIT ANY APPLICATIONS YET)
+
+MAKE SURE YOU HAVE READ EVERYTHIGN EXTREMELY CAREFULLY AND ADDRESSED ALL THE POINTS THAT START WITH IMPORTANTLY:
+
+
+Other stuff to add:
 explore botfather to make it such that it can send me notifications when it is done with a task or if it needs my help (only for job applications that are time sensitive and require timely input to prevent time outs)
 
+"
+Task 3 — Research Plan: Smart, Non-Redundant Identity/Email Routing
+Based on current literature (browser-use docs 2025/2026, Intelligent Context Routing pattern, vLLM Signal-Decision Architecture, Context Engineering Stack research), here is the most efficient approach:
+
+The Problem with the Current Architecture
+Right now, credentials are stored as flat, isolated keys (handshake_email, uchicago_cnet_id) with no semantic link to the profile. The LLM sees a raw profile blob and a separate credential blob — it cannot reason about why Handshake should use the university email unless you tell it explicitly.
+
+The Optimal Plan: 4-Layer Hybrid Identity Resolution
+Layer 1 — Enriched Identity Schema in profile.yaml
+Replace the flat email fields with an annotated identities block that gives each email purpose metadata the LLM can reason over:
+
+personal:
+  email: "arjun@gmail.com"
+  university_email: "arjun@uchicago.edu"
+identities:
+  - email: "arjun@gmail.com"
+    type: personal
+    use_for: [LinkedIn, Indeed, Greenhouse, Lever, general applications]
+  - email: "arjun@uchicago.edu"
+    type: institutional
+    institution: University of Chicago
+    use_for: [Handshake, alumni networks, university-affiliated platforms]
+    sso_provider: uchicago   # pointer to the SSO credential block
+This is the Structured User Profile Injection pattern (Towards AI, 2026) — the profile becomes a semantic document, not just a data store. The LLM reads use_for and immediately knows the mapping without a dedicated handshake_email field.
+
+Layer 2 — Python Domain-to-Identity Resolver (Rules-first)
+Before building the task prompt for the executor, run a lightweight, deterministic resolver:
+
+DOMAIN_IDENTITY_MAP = {
+    "joinhandshake.com": "institutional",
+    "handshake.com":     "institutional",
+    "linkedin.com":      "personal",
+    "indeed.com":        "personal",
+    "lever.co":          "personal",
+    "greenhouse.io":     "personal",
+    "wayup.com":         "personal",
+}
+This implements coarse-to-fine routing (Signal-Decision Architecture, vLLM 2025): fast deterministic rules handle known platforms; unknown platforms fall through to LLM reasoning. No LLM token budget is wasted on obvious decisions.
+
+Layer 3 — Semantic Identity Context Block Injected into the System Prompt
+The executor's task prompt gets a dynamically generated ## Identity Context block built by the resolver:
+
+## Identity Context
+Platform: Handshake (joinhandshake.com) — university career network
+Recommended identity: INSTITUTIONAL
+  Email: arjun@uchicago.edu
+  Login method: UChicago SSO (not direct email/password)
+  CNet ID is available for SSO authentication
+  Do NOT enter your personal email on this platform.
+For unknown platforms, both identities are injected with their use_for annotations and the LLM reasons over them using its world knowledge. This is the Context Engineering Stack pattern (promptbuilder.cc, 2025) — structured, purposeful context at the "Long-Term Memory" layer rather than a raw credential dump.
+
+Layer 4 — Browser-Use Domain-Scoped Secrets (Security Enforcement)
+At the browser_use.Agent call site, use the native sensitive_data parameter that browser-use natively supports (docs 2025/2026). Credentials are scoped to their domains and are never passed to the LLM in plaintext — the agent can only see and use them on the matching domain:
+
+sensitive_data = {
+    "joinhandshake.com": {
+        "cnet_id": settings.uchicago_cnet_id,
+        "password": settings.uchicago_password,
+    },
+    "linkedin.com": {
+        "email":    profile["personal"]["email"],
+        "password": settings.linkedin_password,
+    },
+}
+This directly implements the browser-use domain-scoped secrets + profile pattern — the most current recommended approach per their 2025/2026 authentication docs.
+
+Why This Plan is Optimal
+Property	Result
+Zero redundancy	Enter university email once → system derives all platform mappings
+No new "Handshake email" field needed	use_for: [Handshake] on the university email handles it
+LLM never sees raw credentials	Browser-use domain-scoped secrets enforce this at runtime
+Fast for known platforms	Deterministic rule-based resolver, no LLM call needed
+Graceful fallback for unknown platforms	Both identities injected with semantic annotations; LLM uses world knowledge
+Extensible	Adding a new platform = one line in DOMAIN_IDENTITY_MAP
+Security-correct	Principle of least credential exposure; each domain sees only its own secrets
+When you're ready, I can implement this plan starting with Layer 1 (profile.yaml schema) and working outward through the Python resolver and executor prompt injection.
+"
 
 
-
+EVENTUALLY NEEDS TO BE ABLE TO CHECK:
+Check requirements / qualifications against my profile to make sure they match (so it won't apply to roles that I am underqualified for or that require master's degree or smthg like that)
+If resume needs anonymization
+make it always submit resumes as sharmaarjunresume (grabbing the usersname from settings or sm other place for universal inputs / info) (or whatever the specific requirement is in the job description / application instructions)
 
 # Re-sync deps (langchain-google-genai already installed)
 ./run install
 # Launch
 ./run
+
+PROMPTS: 
+IMPORTANTLY: DO A WEB SEARCH FOR ALL OF THE LATEST RELEVANT LITERATURE ON THE TOPIC AND ALSO CHECK WHAT OTHER MAJOR COMPANIES AND TOOLS ARE DOING TO SOLVE THIS PROBLEM TO INFORM YOUR TECHNICAL IMPLEMENTATION PROPOSAL: see if theres a way to address this problem smartly
+other relevant information that might be helpful for the model:
+Full Cumulative GPA: 3.574 
+university email
+personal email
+phone number 
+race / ethnicity / gender / date of birth
+
+
+
+
+PROMPTS THAT I AM NO LONGER CONSIDERING BECAUSE THE CORE IDEA IS NOT GOOD:
+does the memory smartly know when to include things that has learned in the past based on the agent that it is giving instructions to and its specific task or does it just blanket apply everything that it has learned (change it to the former if the latter is the case, in whatever way makes the most sense and is most efficient (IMPORTANTLY: CHECK THE LATEST RESEARCH LITERATURE AVAILABLE ON THE WEB FOR THIS SPECIFIC ISSUE, MAKE SURE YOU GET THE MOST CURRENT INFO TO INFORM YOUR CHOICE AS THE FIELD IS RAPIDLY EVOLVING). one approach that i was considering is to have a low cost model (maybe an llm or a classifier model or a neural network or something else entirely) run locally to check all of the rules and decide if any of them are relevant and smartly include only the most relevant ones in the prompt to the llm thats actually going to be doing the task (but this might not be the most opitmal way to do it so think about it very carefully). it has to be as absolutely optimal and efficient as possible.
+^ this is unneeded, all rules per agent is a reasonable default 
+^ it might be helpful however to have rules per agent per platform as well 
+^ MAYBE ADD PLATFORM SPECIFIC RULES?
+
+xai-WDI9piSKV9q9gOuNstS43GafizrUwxdRyKcQe1mnUbXeaGuTb62khyQClvu70xY936IPyVFr9G9TZDeC
+^xai key

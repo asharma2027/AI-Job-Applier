@@ -1,0 +1,15 @@
+{
+  "plan_type": "free",
+  "custom_limits": {},
+  "monthly_budget_usd": 0,
+  "daily": {
+    "2026-03-31": {
+      "gemini-2.5-flash": {
+        "requests": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "errors": 0
+      }
+    }
+  }
+}

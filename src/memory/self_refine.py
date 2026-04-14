@@ -3,7 +3,7 @@ Self-Refine critic — validates LLM outputs against active memory rules
 before accepting them (based on Madaan et al. 2023 Self-Refine paper).
 
 For this app:
-- Run a fast Gemini Flash critic pass after each agent output
+- Run a fast task-routed critic pass after each agent output
 - If a rule violation is detected → one automatic retry with the violation
   explained in the prompt
 - If retry still fails → mark for manual review
@@ -33,13 +33,8 @@ async def critic_pass(
 
     try:
         from src.config import settings
-        from langchain_google_genai import ChatGoogleGenerativeAI
 
-        llm = ChatGoogleGenerativeAI(
-            model=settings.llm_model_fast,
-            google_api_key=settings.google_api_key,
-            temperature=0,
-        )
+        llm = settings.get_llm_for_task("critic")
 
         prompt = f"""You are a strict quality critic for an AI pipeline.
 

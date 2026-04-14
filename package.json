@@ -1,0 +1,10 @@
+{
+  "name": "job-applier",
+  "private": true,
+  "scripts": {
+    "build": "npm run build --prefix dashboard",
+    "dev": "npm run dev --prefix dashboard",
+    "lint": "npm run lint --prefix dashboard",
+    "preview": "npm run preview --prefix dashboard"
+  }
+}

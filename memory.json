@@ -1,0 +1,19 @@
+{
+  "analyzer": [],
+  "cover_letter": [],
+  "executor": [
+    {
+      "id": "eab5cc9a-9ae6-4f82-907e-da00106bdcea",
+      "agent": "executor",
+      "category": "UI",
+      "description": "Bad button click",
+      "example_bad": "Clicked too early",
+      "correction": "Wait for button",
+      "severity": "medium",
+      "enabled": true,
+      "created_at": "2026-03-26T23:48:38.830625",
+      "times_triggered": 0
+    }
+  ],
+  "sourcer": []
+}
