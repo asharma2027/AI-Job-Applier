@@ -23,10 +23,14 @@ class JobStatus(str, enum.Enum):
     analyzing = "analyzing"
     analyzed = "analyzed"
     skipped = "skipped"        # below relevance threshold
-    drafting_cl = "drafting_cl"
-    awaiting_review = "awaiting_review"
-    queued = "queued"          # ready for application
-    applying = "applying"
+    drafting_cl = "drafting_cl"              # legacy — kept for DB compat
+    pending_cl_upload = "pending_cl_upload"  # waiting for user to upload cover letter
+    awaiting_review = "awaiting_review"      # legacy — kept for DB compat
+    queued = "queued"                        # ready for application
+    filling = "filling"        # browser agent actively filling the form
+    filled = "filled"          # form filled & saved — awaiting manual Submit click
+    submitting = "submitting"  # browser agent clicking the final submit button
+    applying = "applying"      # legacy alias kept for backward compat
     applied = "applied"
     failed = "failed"
 
@@ -40,8 +44,9 @@ class CoverLetterStatus(str, enum.Enum):
 class ApplicationStatus(str, enum.Enum):
     queued = "queued"
     in_progress = "in_progress"
+    filled = "filled"          # form complete, submit not yet clicked
     submitted = "submitted"
-    paused = "paused"          # auto_submit=false, waiting for manual submit
+    paused = "paused"          # legacy
     failed = "failed"
 
 

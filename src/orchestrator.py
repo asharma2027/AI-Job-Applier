@@ -2,7 +2,11 @@
 LangGraph Orchestrator — Stateful pipeline graph for the full application workflow.
 
 Nodes:
-  source → analyze → draft_cover_letters → wait_for_approval → execute → (loop)
+  source → analyze → execute → (loop)
+
+Cover letter handling is no longer part of the automated pipeline —
+when the analyzer detects a CL is needed, it creates a pending_cl_upload
+record and notifies the user via the dashboard.
 """
 from __future__ import annotations
 
@@ -15,7 +19,6 @@ from langgraph.graph import StateGraph, END
 
 from src.agents.sourcer import run_sourcer
 from src.agents.analyzer import run_analyzer
-from src.agents.cover_letter import run_cover_letter_agent
 from src.agents.executor import run_executor
 
 logger = logging.getLogger(__name__)
@@ -29,7 +32,6 @@ class PipelineState(TypedDict):
     new_jobs_found: int
     jobs_analyzed: int
     jobs_queued: int
-    cover_letters_drafted: int
     applications_submitted: int
     errors: Annotated[list[str], add]
 
@@ -59,17 +61,6 @@ async def node_analyze(state: PipelineState) -> PipelineState:
     return {**state, "jobs_analyzed": analyzed, "jobs_queued": queued}
 
 
-async def node_draft_cover_letters(state: PipelineState) -> PipelineState:
-    logger.info("=== [PIPELINE] Stage: DRAFT_COVER_LETTERS ===")
-    try:
-        drafted = await run_cover_letter_agent()
-    except Exception as e:
-        logger.error(f"[pipeline] cover_letter agent failed: {e}")
-        drafted = 0
-        state["errors"].append(f"cover_letter: {e}")
-    return {**state, "cover_letters_drafted": drafted}
-
-
 async def node_execute(state: PipelineState) -> PipelineState:
     logger.info("=== [PIPELINE] Stage: EXECUTE ===")
     try:
@@ -89,13 +80,11 @@ def build_pipeline() -> StateGraph:
 
     graph.add_node("source", node_source)
     graph.add_node("analyze", node_analyze)
-    graph.add_node("draft_cover_letters", node_draft_cover_letters)
     graph.add_node("execute", node_execute)
 
     graph.set_entry_point("source")
     graph.add_edge("source", "analyze")
-    graph.add_edge("analyze", "draft_cover_letters")
-    graph.add_edge("draft_cover_letters", "execute")
+    graph.add_edge("analyze", "execute")
     graph.add_edge("execute", END)
 
     return graph.compile()
@@ -111,7 +100,6 @@ async def run_pipeline_once() -> PipelineState:
         "new_jobs_found": 0,
         "jobs_analyzed": 0,
         "jobs_queued": 0,
-        "cover_letters_drafted": 0,
         "applications_submitted": 0,
         "errors": [],
     }
@@ -119,6 +107,6 @@ async def run_pipeline_once() -> PipelineState:
     logger.info(
         f"[pipeline] Run complete — "
         f"new={result['new_jobs_found']} analyzed={result['jobs_analyzed']} "
-        f"drafted_cl={result['cover_letters_drafted']} submitted={result['applications_submitted']}"
+        f"submitted={result['applications_submitted']}"
     )
     return result

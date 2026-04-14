@@ -1,6 +1,6 @@
 """
 Analysis Agent — Parses JDs and routes to the correct resume + determines cover letter need.
-Now uses Gemini 2.5 Pro (quality model) with memory rules injected into prompts.
+Uses task-aware model routing with memory rules injected into prompts.
 """
 from __future__ import annotations
 
@@ -75,12 +75,12 @@ Respond ONLY with valid JSON matching this schema:
 
 
 async def analyze_job(job: Job) -> Optional[JobAnalysis]:
-    """Call quality LLM (Gemini Pro) to analyze a job. Returns structured analysis."""
+    """Call task-routed LLM to analyze a job. Returns structured analysis."""
     available_categories = settings.list_resume_categories()
     if not available_categories:
         available_categories = ["finance", "consulting", "tech", "general"]
 
-    llm = settings.get_llm_quality()
+    llm = settings.get_llm_for_task("analyzer")
     prompt = _build_analysis_prompt(job, available_categories)
     context = f"Analyze job: {job.title} at {job.company}"
     rules_block = build_rules_block("analyzer")
@@ -151,8 +151,10 @@ async def run_analyzer() -> tuple[int, int]:
                     f"(score={analysis.relevance_score:.2f})"
                 )
             elif analysis.cover_letter_required:
-                job_db.status = JobStatus.drafting_cl
-                logger.info(f"[analyzer] '{job.title}' at {job.company} → needs cover letter")
+                # Create pending CL upload (local model picks best example + builds prompt)
+                from src.agents.cover_letter import create_pending_cl_upload
+                await create_pending_cl_upload(job)
+                logger.info(f"[analyzer] '{job.title}' at {job.company} → pending cover letter upload")
             else:
                 job_db.status = JobStatus.queued
                 queued += 1

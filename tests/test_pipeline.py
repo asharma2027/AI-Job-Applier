@@ -56,40 +56,34 @@ async def test_create_and_retrieve_job():
 
 
 @pytest.mark.asyncio
-async def test_cover_letter_section_parsing():
-    """Test that <<<SECTION>>> boundaries are correctly parsed."""
-    from src.agents.cover_letter import parse_sections, apply_generated_sections
+async def test_cover_letter_user_prompt_building():
+    """Test that the user-facing prompt builder produces a valid prompt."""
+    from src.agents.cover_letter import build_user_prompt
 
-    template = """Dear Hiring Manager,
+    prompt = build_user_prompt(
+        job_title="Software Engineering Intern",
+        job_company="Test Corp",
+        job_description="We are looking for an intern with Python and SQL skills.",
+        cover_letter_text="Dear Hiring Manager, I am writing to express my interest...",
+    )
+    assert "Software Engineering Intern" in prompt
+    assert "Test Corp" in prompt
+    assert "Python" in prompt
+    assert "cover letter to modify" in prompt
+    assert "Dear Hiring Manager" in prompt
 
-<<<SECTION: opening>>>
-I am applying for the role.
-<<<END_SECTION>>>
 
-My skills are:
+@pytest.mark.asyncio
+async def test_pdf_text_extraction():
+    """Test that PDF text extraction works on example files."""
+    from src.agents.cover_letter import extract_pdf_text
+    from pathlib import Path
 
-<<<SECTION: skills_section>>>
-I know Python and Excel.
-<<<END_SECTION>>>
-
-Sincerely,
-[Name]
-"""
-    sections = parse_sections(template)
-    assert "opening" in sections
-    assert "skills_section" in sections
-    assert "I am applying for the role." in sections["opening"]
-
-    generated = {
-        "opening": "I am excited to apply for this internship.",
-        "skills_section": "I have strong Python, SQL, and financial modeling skills.",
-    }
-    result = apply_generated_sections(template, generated)
-    assert "I am excited to apply for this internship." in result
-    assert "I am applying for the role." not in result
-    assert "Dear Hiring Manager," in result  # preserved
-    assert "Sincerely," in result  # preserved
-    assert "<<<SECTION:" not in result  # markers removed
+    pdf_path = Path("src/templates/financecoverletter.pdf")
+    if pdf_path.exists():
+        text = extract_pdf_text(pdf_path)
+        assert len(text) > 100
+        assert "Arjun" in text
 
 
 @pytest.mark.asyncio

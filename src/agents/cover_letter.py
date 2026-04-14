@@ -1,205 +1,163 @@
 """
-Cover Letter Agent — prompt assembly mode (zero token spend).
+Cover Letter Matcher — Uses a local LLM (Ollama/Qwen3 8B) to select the best
+matching cover letter example and builds a user-facing prompt.
 
-Instead of calling an LLM to generate the cover letter, this agent:
-1. Reads the template with <<<SECTION>>> markers
-2. Analyzes the job description
-3. Assembles a rich, complete prompt with all context
-4. Stores it so the user can copy → paste into Gemini/Claude → paste result back
-
-The "paste back" path parses the response and applies sections to the template.
+No AI generation happens here. The user copies the prompt, generates the CL
+externally, and uploads it to the application website.
 """
 from __future__ import annotations
 
 import logging
-import re
-from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from src.memory.memory_store import build_rules_block, get_rules
+import httpx
+
 from src.config import settings
+from src.database import get_db
+from src.models import Job, JobStatus, CoverLetter, CoverLetterStatus
 
 logger = logging.getLogger(__name__)
 
-# ── Section parsing ─────────────────────────────────────────────────────────
 
-SECTION_PATTERN = re.compile(
-    r"<<<SECTION:\s*(?P<name>[^>]+)>>>\s*(?P<content>.*?)\s*<<<END_SECTION>>>",
-    re.DOTALL | re.IGNORECASE,
-)
-
-
-def parse_sections(template: str) -> dict[str, str]:
-    """Extract all <<SECTION>> boundaries from a template."""
-    return {
-        m.group("name").strip(): m.group("content").strip()
-        for m in SECTION_PATTERN.finditer(template)
-    }
+def extract_pdf_text(pdf_path: Path) -> str:
+    """Extract plain text from a PDF file using PyMuPDF."""
+    try:
+        import pymupdf
+        doc = pymupdf.open(str(pdf_path))
+        text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+        return text.strip()
+    except Exception as e:
+        logger.error(f"[cover_letter] Failed to extract text from {pdf_path}: {e}")
+        return ""
 
 
-def apply_generated_sections(template: str, generated: dict[str, str]) -> str:
+def load_example_texts() -> list[tuple[str, str]]:
+    """Load (filename, text) from all example cover letter PDFs."""
+    examples = settings.list_cover_letter_examples()
+    results = []
+    for pdf_path in examples:
+        text = extract_pdf_text(pdf_path)
+        if text:
+            results.append((pdf_path.name, text))
+    return results
+
+
+async def select_best_cover_letter(
+    job_description: str,
+    job_title: str,
+    job_company: str,
+    examples: list[tuple[str, str]],
+) -> tuple[str, str]:
     """
-    Replace <<<SECTION>>> blocks in template with generated content.
-    Removes the markers — output is clean prose.
+    Use a local LLM via Ollama to pick the most relevant cover letter example.
+    Returns (filename, full_text) of the best match.
+    Falls back to the first example if Ollama is unavailable.
     """
-    def replacer(m: re.Match) -> str:
-        name = m.group("name").strip()
-        return generated.get(name, m.group("content").strip())
+    if not examples:
+        return ("", "")
+    if len(examples) == 1:
+        return examples[0]
 
-    result = SECTION_PATTERN.sub(replacer, template)
-    return result.strip()
+    numbered = "\n\n".join(
+        f"--- COVER LETTER {i+1} (file: {name}) ---\n{text[:1500]}"
+        for i, (name, text) in enumerate(examples)
+    )
+
+    prompt = f"""/no_think
+You are choosing which existing cover letter is the best starting point to modify for a new job application.
+
+JOB: {job_title} at {job_company}
+JOB DESCRIPTION (excerpt):
+{job_description[:2000]}
+
+AVAILABLE COVER LETTERS:
+{numbered}
+
+Reply with ONLY the number (1, 2, 3, etc.) of the cover letter that is most closely aligned with this job description in terms of industry, skills, and tone. Just the number, nothing else."""
+
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(
+                f"{settings.ollama_base_url}/api/generate",
+                json={"model": settings.ollama_model, "prompt": prompt, "stream": False},
+            )
+            resp.raise_for_status()
+            answer = resp.json().get("response", "").strip()
+            digits = "".join(c for c in answer if c.isdigit())
+            if digits:
+                idx = int(digits) - 1
+                if 0 <= idx < len(examples):
+                    logger.info(f"[cover_letter] Local model selected example {idx+1}: {examples[idx][0]}")
+                    return examples[idx]
+    except httpx.ConnectError:
+        logger.warning("[cover_letter] Ollama not reachable — falling back to first example")
+    except Exception as e:
+        logger.warning(f"[cover_letter] Ollama selection failed: {e} — falling back to first example")
+
+    return examples[0]
 
 
-# ── Prompt assembly ──────────────────────────────────────────────────────────
-
-def build_cover_letter_prompt(
+def build_user_prompt(
     job_title: str,
     job_company: str,
     job_description: str,
-    key_requirements: list[str],
-    resume_type: str,
-    template: str,
-    user_profile: Optional[dict] = None,
+    cover_letter_text: str,
 ) -> str:
-    """
-    Assemble a comprehensive prompt for the user to paste into any LLM.
-    This contains all the context needed to generate a great cover letter.
-    """
-    sections = parse_sections(template)
-    section_names = list(sections.keys())
-
-    # Memory rules for cover_letter agent
-    rules_block = build_rules_block("cover_letter")
-
-    profile_block = ""
-    if user_profile:
-        profile_block = f"""
-## My Background
-- **Name:** {user_profile.get('name', '[Your Name]')}
-- **Email:** {user_profile.get('email', '[Your Email]')}
-- **Education:** {user_profile.get('education', {}).get('degree', '')} from {user_profile.get('education', {}).get('school', '')}
-- **GPA:** {user_profile.get('education', {}).get('gpa', '')}
-- **Resume Category:** {resume_type}
-- **Relevant Experience:** {', '.join(user_profile.get('experience', [])[:3])}
-- **Skills:** {', '.join(user_profile.get('skills', [])[:10])}
-"""
-
-    requirements_block = ""
-    if key_requirements:
-        requirements_block = "\n## Key Requirements Identified\n" + "\n".join(
-            f"- {r}" for r in key_requirements[:8]
-        )
-
-    section_instructions = "\n".join([
-        f"- **{name}**: Rewrite this section to align with the job. Keep it natural and specific."
-        for name in section_names
-    ])
-
-    prompt = f"""# Cover Letter Generation Task
-
-## Job Details
-- **Position:** {job_title}
-- **Company:** {job_company}
-
-## Full Job Description
-{job_description}
-{requirements_block}
-{profile_block}
-{rules_block}
-
----
-
-## Your Task
-
-Below is my cover letter template. It has special markers like `<<<SECTION: name>>>` and `<<<END_SECTION>>>` around sections I want you to rewrite.
-
-**YOU MUST:**
-1. Rewrite ONLY the content between `<<<SECTION: name>>>` and `<<<END_SECTION>>>` markers
-2. Keep the exact markers in your response so I can parse your output
-3. Do NOT change any text outside the markers
-4. Keep language natural, specific to this company, and non-generic
-5. Each rewritten section should be 2-5 sentences
-
-**Sections to rewrite:**
-{section_instructions}
-
-## Template (return this entire block with sections rewritten):
-
-{template}
-
----
-Return ONLY the complete template text above with the section contents replaced. Do not add any commentary before or after.
-"""
-    return prompt.strip()
-
-
-# ── Paste-back parsing ───────────────────────────────────────────────────────
-
-def apply_pasted_response(template: str, pasted_response: str) -> tuple[str, dict[str, str]]:
-    """
-    Parse the user's pasted LLM response and apply section replacements to the template.
-
-    Returns:
-        (merged_draft: str, changed_sections: dict)
-    """
-    # Try to extract sections from the pasted response
-    generated = {
-        m.group("name").strip(): m.group("content").strip()
-        for m in SECTION_PATTERN.finditer(pasted_response)
-    }
-
-    if not generated:
-        # If no markers found, treat the entire pasted text as the cover letter
-        logger.warning("[cover_letter] No section markers found in pasted response — using as-is")
-        return pasted_response.strip(), {}
-
-    merged = apply_generated_sections(template, generated)
-    return merged, generated
-
-
-# ── Main entry point ─────────────────────────────────────────────────────────
-
-async def prepare_cover_letter_prompt(job: dict, profile: Optional[dict] = None) -> str:
-    """
-    Called by the orchestrator. Builds and returns the cover-letter prompt.
-    No LLM call is made here.
-    """
-    template_path = settings.cover_letter_template
-    if template_path.exists():
-        template = template_path.read_text()
-    else:
-        template = _default_template()
-
-    return build_cover_letter_prompt(
-        job_title=job.get("title", ""),
-        job_company=job.get("company", ""),
-        job_description=job.get("description", ""),
-        key_requirements=job.get("key_requirements") or [],
-        resume_type=job.get("resume_type", "general"),
-        template=template,
-        user_profile=profile,
+    """Build the copy-ready prompt the user pastes into an external AI."""
+    return (
+        f"Modify my cover letter for the following specific job listing and description, "
+        f"keeping the language simple and direct and sticking to the original language as "
+        f"much as possible (but not strictly, if there are any opportunities for improvement):\n\n"
+        f"'{job_title} at {job_company}\n\n{job_description}'\n\n"
+        f"and here is the cover letter to modify:\n\n"
+        f"'{cover_letter_text}'"
     )
 
 
-def _default_template() -> str:
-    return """Dear Hiring Team,
+async def create_pending_cl_upload(job: Job) -> Optional[CoverLetter]:
+    """
+    Called by the analyzer when a job requires a cover letter.
+    Uses the local model to pick the best example, builds the user-facing prompt,
+    creates a CoverLetter record, and sets the job to pending_cl_upload.
+    """
+    examples = load_example_texts()
+    if not examples:
+        logger.warning(
+            f"[cover_letter] No example cover letters found. "
+            f"Upload PDFs to {settings.cover_letter_examples_dir} first."
+        )
+        selected_name, selected_text = "", "(No example cover letters uploaded yet)"
+    else:
+        selected_name, selected_text = await select_best_cover_letter(
+            job_description=job.description or "",
+            job_title=job.title,
+            job_company=job.company,
+            examples=examples,
+        )
 
-<<<SECTION: opening>>>
-I am writing to express my strong interest in this position.
-<<<END_SECTION>>>
+    prompt = build_user_prompt(
+        job_title=job.title,
+        job_company=job.company,
+        job_description=job.description or "(no description available)",
+        cover_letter_text=selected_text,
+    )
 
-<<<SECTION: why_company>>>
-I am particularly drawn to your company's mission and the work your team does.
-<<<END_SECTION>>>
+    async with get_db() as db:
+        cl = CoverLetter(
+            job_id=job.id,
+            draft_content=f"[Pending your cover letter upload — best matching example: {selected_name or 'none'}]",
+            prompt_content=prompt,
+            status=CoverLetterStatus.pending,
+        )
+        db.add(cl)
 
-<<<SECTION: relevant_experience>>>
-Through my academic and professional experiences, I have developed skills directly relevant to this role.
-<<<END_SECTION>>>
+        job_db = await db.get(Job, job.id)
+        job_db.status = JobStatus.pending_cl_upload
 
-<<<SECTION: closing>>>
-I would welcome the opportunity to discuss how my background aligns with your needs. Thank you for your consideration.
-<<<END_SECTION>>>
-
-Sincerely,
-[Your Name]
-"""
+    logger.info(
+        f"[cover_letter] Pending CL upload created for '{job.title}' at {job.company} "
+        f"(matched example: {selected_name or 'none'})"
+    )
+    return cl

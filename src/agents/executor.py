@@ -1,8 +1,11 @@
 """
-Execution Agent — Uses browser-use to fill and submit job application forms.
-Works on any ATS: Workday, Greenhouse, Lever, iCIMS, proprietary sites.
+Execution Agent — browser-use to fill and submit job application forms.
 
-Key feature: Takes a screenshot after every page/section before moving on.
+Two explicit stages, each triggered manually from the dashboard:
+  1. fill_job(job_id)   — fills every field, stops before Submit, saves screenshots
+  2. submit_job(job_id) — re-opens the application and clicks the final Submit button
+
+Works on any ATS: Workday, Greenhouse, Lever, iCIMS, proprietary sites.
 """
 from __future__ import annotations
 
@@ -22,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 def load_user_profile() -> dict:
-    """Load user profile from YAML for form filling."""
     import yaml
     profile_path = Path("src/config/profile.yaml")
     if not profile_path.exists():
@@ -33,7 +35,6 @@ def load_user_profile() -> dict:
 
 
 def cover_letter_to_pdf(content: str, output_path: Path) -> bool:
-    """Convert markdown cover letter to PDF via WeasyPrint."""
     try:
         import markdown2
         from weasyprint import HTML
@@ -51,201 +52,298 @@ p {{ margin: 0 0 12pt 0; }}
         return False
 
 
-async def execute_application(
-    job: Job,
-    cover_letter_content: str | None,
-    job_records_dir: Path,
-) -> tuple[bool, list[str], str]:
-    """
-    Use browser-use to fill and submit a job application.
-    Takes a screenshot after every page before moving on.
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 — Fill form (never clicks Submit)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    Returns:
-        (success: bool, screenshot_paths: list[str], final_message: str)
+async def fill_job(job_id: int) -> dict:
     """
+    Open the application form, fill every field, and STOP before the Submit button.
+    Takes a screenshot of the completed final page.
+    Sets job status to `filled`.
+    Returns a summary dict.
+    """
+    async with get_db() as db:
+        job = await db.get(Job, job_id)
+        if not job:
+            return {"ok": False, "message": f"Job {job_id} not found"}
+        if job.status not in (JobStatus.queued, JobStatus.failed, JobStatus.filled):
+            return {"ok": False, "message": f"Job {job_id} is in status '{job.status}' — expected 'queued'"}
+
     try:
-        from browser_use import Agent, Controller
-        from browser_use.browser.browser import Browser, BrowserConfig
+        from browser_use import Agent
     except ImportError:
-        logger.error("[executor] browser-use not installed.")
-        return False, [], "browser-use not installed"
+        return {"ok": False, "message": "browser-use not installed"}
 
     profile = load_user_profile()
+    rules_block = build_rules_block("executor")
+    job_records_dir = settings.records_dir / f"job_{job_id}"
     job_records_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cover letter PDF
+    # Check if the user already uploaded the cover letter to the application website
+    user_uploaded_cl = False
     cl_pdf_path: str | None = None
-    if cover_letter_content:
-        cl_pdf = job_records_dir / "cover_letter.pdf"
-        if cover_letter_to_pdf(cover_letter_content, cl_pdf):
-            cl_pdf_path = str(cl_pdf.absolute())
+    async with get_db() as db:
+        job = await db.get(Job, job_id)
+        if job.cover_letter_required:
+            cl_result = await db.execute(
+                select(CoverLetter).where(
+                    CoverLetter.job_id == job_id,
+                    CoverLetter.status == CoverLetterStatus.approved,
+                )
+            )
+            cl = cl_result.scalar_one_or_none()
+            if cl:
+                if cl.approved_content and not cl.approved_content.startswith("["):
+                    cl_pdf = job_records_dir / "cover_letter.pdf"
+                    if cover_letter_to_pdf(cl.approved_content, cl_pdf):
+                        cl_pdf_path = str(cl_pdf.absolute())
+                else:
+                    user_uploaded_cl = True
 
-    # Resume
     resume_type = job.resume_type or "general"
     resume_path = settings.get_resume_path(resume_type)
     if not resume_path.exists():
         resume_path = settings.get_resume_path("general")
     if not resume_path.exists():
-        logger.error(f"[executor] No resume found for type '{resume_type}'.")
-        return False, [], f"Resume not found: {resume_type}"
+        return {"ok": False, "message": f"No resume found for type '{resume_type}'"}
 
-    cl_instruction = (
-        f"Upload the cover letter PDF from: {cl_pdf_path}"
-        if cl_pdf_path
-        else "No cover letter needed. Skip any cover letter upload field."
-    )
-    submit_instruction = (
-        "Click the final SUBMIT button and wait for a confirmation message."
-        if settings.auto_submit
-        else "Fill all fields but DO NOT click submit. Stop after filling the last page."
-    )
+    if cl_pdf_path:
+        cl_instruction = f"Upload the cover letter PDF from: {cl_pdf_path}"
+    elif user_uploaded_cl:
+        cl_instruction = (
+            "The cover letter has already been uploaded by the user. "
+            "Skip any cover letter upload field — do NOT re-upload or overwrite it."
+        )
+    else:
+        cl_instruction = "No cover letter needed. Skip any cover letter upload field."
 
-    # Memory rules for executor
-    rules_block = build_rules_block("executor")
+    safeguards_block = """
+### 🛑 ABSOLUTE HARD STOP — DO NOT SUBMIT 🛑
+This is the FILL stage only. You must NEVER click the final Submit button.
 
-    screenshot_paths: list[str] = []
-    page_counter = [0]  # mutable for closure
+FORBIDDEN:
+- Clicking Submit / Apply / Send Application / Finish / Complete / Confirm / Finalize / Done.
+- Pressing Enter on any final confirmation dialog.
+- Clicking Withdraw, Delete, or Remove.
+- Modifying the candidate's global profile.
 
-    async def on_page_complete(page_name: str, screenshot_bytes: bytes | None) -> None:
-        """Called by the agent after each page/section completion."""
-        page_counter[0] += 1
-        if screenshot_bytes:
-            sc_path = job_records_dir / f"page_{page_counter[0]:02d}_{page_name.replace(' ', '_')}.png"
-            sc_path.write_bytes(screenshot_bytes)
-            screenshot_paths.append(str(sc_path))
-            logger.info(f"[executor] Screenshot saved: {sc_path.name}")
+ALLOWED:
+- Clicking Next / Continue / Save / Save & Continue / Review to advance through pages.
+- Filling text fields, selecting dropdowns, checking boxes, uploading files.
+- Taking screenshots.
 
-    task = f"""You are applying for a job on behalf of a candidate. Be precise and thorough.
+WHEN YOU REACH THE FINAL PAGE:
+1. Fill all remaining fields.
+2. Take a screenshot showing the completed form WITH the submit button VISIBLE BUT NOT CLICKED.
+3. STOP. Report status as FILLED.
+"""
+
+    task = f"""You are filling a job application form on behalf of a candidate. STOP before submitting.
 
 Application URL: {job.url}
 Resume PDF path: {resume_path.absolute()}
 {cl_instruction}
 {rules_block}
+{safeguards_block}
 
 Candidate Profile:
 {profile}
 
-CRITICAL INSTRUCTIONS — follow these exactly:
+INSTRUCTIONS:
 1. Navigate to the application URL.
-2. If you see a login page, look for options like "Apply as Guest", "Apply with Resume",
-   or "Continue without account" to avoid requiring a new account.
-3. Fill in ALL required fields using the candidate profile. Be careful with dropdowns and date fields.
-4. Upload the resume PDF when prompted for a resume or CV file.
+2. If a login is needed, look for "Apply as Guest", "Apply with Resume", or "Continue without account".
+3. Fill ALL required fields using the candidate profile.
+4. Upload the resume PDF when asked for a resume or CV.
 5. {cl_instruction}
-6. Answer ANY screening questions honestly based on the profile.
-
-AFTER COMPLETING EACH PAGE OR SECTION (before clicking Next/Continue):
-- Take a screenshot of the completed page to verify the information
-- Only proceed to the next page after taking the screenshot
-
-7. {submit_instruction}
-8. After the final step, take a final screenshot.
-9. Return one of these status messages:
-   - SUBMITTED: Application successfully submitted. Confirmation: [confirmation text]
-   - FILLED: All fields completed but not submitted (auto_submit=false)
-   - ERROR: [describe what went wrong]
+6. Answer screening questions honestly based on the profile.
+7. After completing each page, take a screenshot BEFORE clicking Next/Continue.
+8. On the FINAL page: fill all remaining fields, take a screenshot showing the submit button, then STOP.
+9. Return: FILLED — [brief summary of pages completed]
 """
 
-    llm = settings.get_llm_fast()
+    # Mark as filling
+    async with get_db() as db:
+        job_db = await db.get(Job, job_id)
+        job_db.status = JobStatus.filling
+        existing_app = await db.execute(select(Application).where(Application.job_id == job_id))
+        app = existing_app.scalar_one_or_none()
+        if not app:
+            app = Application(job_id=job_id, status=ApplicationStatus.in_progress, started_at=datetime.utcnow())
+            db.add(app)
+        else:
+            app.status = ApplicationStatus.in_progress
+            app.started_at = datetime.utcnow()
+
+    screenshot_paths: list[str] = []
+    page_counter = [0]
+
+    async def on_page_complete(page_name: str, screenshot_bytes: bytes | None) -> None:
+        page_counter[0] += 1
+        if screenshot_bytes:
+            sc_path = job_records_dir / f"fill_{page_counter[0]:02d}_{page_name.replace(' ', '_')}.png"
+            sc_path.write_bytes(screenshot_bytes)
+            screenshot_paths.append(str(sc_path))
+
+    llm = settings.get_browser_use_llm_for_task("executor")
     agent = Agent(task=task, llm=llm)
+    agent.on_page_complete = on_page_complete
 
     try:
         result = await agent.run()
         final = result.final_result() or ""
 
-        # Collect any screenshots the agent captured
+        # Collect agent screenshots
         try:
             if hasattr(result, "screenshots") and result.screenshots:
                 for i, sc_bytes in enumerate(result.screenshots):
-                    sc_path = job_records_dir / f"page_{i+1:02d}_agent.png"
+                    sc_path = job_records_dir / f"fill_agent_{i+1:02d}.png"
                     sc_path.write_bytes(sc_bytes)
                     if str(sc_path) not in screenshot_paths:
                         screenshot_paths.append(str(sc_path))
         except Exception:
             pass
 
-        success = "SUBMITTED" in final.upper() or "FILLED" in final.upper()
-        return success, screenshot_paths, final
+        success = "FILLED" in final.upper() or "SUBMITTED" in final.upper()
+
+        async with get_db() as db:
+            job_db = await db.get(Job, job_id)
+            app_result = await db.execute(select(Application).where(Application.job_id == job_id))
+            app_db = app_result.scalar_one_or_none()
+
+            if success:
+                job_db.status = JobStatus.filled
+                if app_db:
+                    app_db.status = ApplicationStatus.filled
+                    app_db.screenshot_paths = screenshot_paths
+                logger.info(f"[executor] Job {job_id} filled successfully. Awaiting manual submit.")
+            else:
+                job_db.status = JobStatus.failed
+                if app_db:
+                    app_db.status = ApplicationStatus.failed
+                    app_db.error_log = final
+                    app_db.screenshot_paths = screenshot_paths
+                logger.error(f"[executor] Job {job_id} fill failed: {final[:200]}")
+
+        return {"ok": success, "message": final, "screenshots": len(screenshot_paths)}
 
     except Exception as e:
-        logger.error(f"[executor] Agent error for job {job.id}: {e}")
-        return False, screenshot_paths, str(e)
-
-
-async def run_executor() -> int:
-    """
-    Execute applications for all queued jobs.
-    Returns count of successfully submitted applications.
-    """
-    logger.info("[executor] Starting execution run...")
-    submitted = 0
-
-    async with get_db() as db:
-        result = await db.execute(select(Job).where(Job.status == JobStatus.queued))
-        jobs = result.scalars().all()
-
-    logger.info(f"[executor] {len(jobs)} jobs queued for application")
-
-    for job in jobs:
-        cover_letter_content: str | None = None
-        if job.cover_letter_required:
-            async with get_db() as db:
-                cl_result = await db.execute(
-                    select(CoverLetter).where(
-                        CoverLetter.job_id == job.id,
-                        CoverLetter.status == CoverLetterStatus.approved,
-                    )
-                )
-                cl = cl_result.scalar_one_or_none()
-                if not cl:
-                    logger.info(f"[executor] Job {job.id} awaiting approved cover letter.")
-                    continue
-                cover_letter_content = cl.approved_content or cl.draft_content
-
-        # Mark as in progress
         async with get_db() as db:
-            job_db = await db.get(Job, job.id)
-            job_db.status = JobStatus.applying
-            app = Application(
-                job_id=job.id,
-                status=ApplicationStatus.in_progress,
-                started_at=datetime.utcnow(),
-            )
-            db.add(app)
+            job_db = await db.get(Job, job_id)
+            if job_db:
+                job_db.status = JobStatus.failed
+        logger.error(f"[executor] fill_job error for job {job_id}: {e}")
+        return {"ok": False, "message": str(e)}
 
-        job_records_dir = settings.records_dir / f"job_{job.id}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — Submit (clicks the final Submit button)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def submit_job(job_id: int) -> dict:
+    """
+    Re-open the application, navigate to the final page, and click Submit.
+    Most ATSs (Workday, Greenhouse, Lever) persist form state server-side,
+    so navigating back to the application URL restores the saved progress.
+    Sets job status to `applied`.
+    Returns a summary dict.
+    """
+    async with get_db() as db:
+        job = await db.get(Job, job_id)
+        if not job:
+            return {"ok": False, "message": f"Job {job_id} not found"}
+        if job.status != JobStatus.filled:
+            return {"ok": False, "message": f"Job {job_id} is in status '{job.status}' — expected 'filled'"}
+
+    try:
+        from browser_use import Agent
+    except ImportError:
+        return {"ok": False, "message": "browser-use not installed"}
+
+    rules_block = build_rules_block("executor")
+    job_records_dir = settings.records_dir / f"job_{job_id}"
+    job_records_dir.mkdir(parents=True, exist_ok=True)
+
+    task = f"""You are submitting a job application that was previously filled out and saved.
+
+Application URL: {job.url}
+{rules_block}
+
+INSTRUCTIONS:
+1. Navigate to the application URL: {job.url}
+2. Look for "Continue Application", "Resume Application", "Your saved application", or similar.
+   If you see the application form already in progress, navigate through to the final page.
+3. Navigate any review or summary pages until you reach the FINAL page with the Submit button.
+4. Verify the form looks correct (fields are filled).
+5. Click the FINAL SUBMIT / APPLY / SEND APPLICATION button.
+6. Wait for the confirmation page or confirmation message.
+7. Take a screenshot of the confirmation.
+8. Return: SUBMITTED — [paste the confirmation text or message you see on screen]
+   If you cannot find the submit button or the application is gone, return: ERROR — [explain what you see]
+"""
+
+    # Mark as submitting
+    async with get_db() as db:
+        job_db = await db.get(Job, job_id)
+        job_db.status = JobStatus.submitting
+
+    screenshot_paths: list[str] = []
+    page_counter = [0]
+
+    async def on_page_complete(page_name: str, screenshot_bytes: bytes | None) -> None:
+        page_counter[0] += 1
+        if screenshot_bytes:
+            sc_path = job_records_dir / f"submit_{page_counter[0]:02d}_{page_name.replace(' ', '_')}.png"
+            sc_path.write_bytes(screenshot_bytes)
+            screenshot_paths.append(str(sc_path))
+
+    llm = settings.get_browser_use_llm_for_task("executor")
+    agent = Agent(task=task, llm=llm)
+    agent.on_page_complete = on_page_complete
+
+    try:
+        result = await agent.run()
+        final = result.final_result() or ""
 
         try:
-            success, screenshot_paths, final_msg = await execute_application(
-                job, cover_letter_content, job_records_dir
-            )
-        except Exception as e:
-            success = False
-            screenshot_paths = []
-            final_msg = str(e)
-            logger.error(f"[executor] Error applying to job {job.id}: {e}")
+            if hasattr(result, "screenshots") and result.screenshots:
+                for i, sc_bytes in enumerate(result.screenshots):
+                    sc_path = job_records_dir / f"submit_agent_{i+1:02d}.png"
+                    sc_path.write_bytes(sc_bytes)
+                    if str(sc_path) not in screenshot_paths:
+                        screenshot_paths.append(str(sc_path))
+        except Exception:
+            pass
+
+        success = "SUBMITTED" in final.upper()
 
         async with get_db() as db:
-            job_db = await db.get(Job, job.id)
-            app_result = await db.execute(select(Application).where(Application.job_id == job.id))
+            job_db = await db.get(Job, job_id)
+            app_result = await db.execute(select(Application).where(Application.job_id == job_id))
             app_db = app_result.scalar_one_or_none()
 
             if success:
                 job_db.status = JobStatus.applied
                 if app_db:
-                    app_db.status = (
-                        ApplicationStatus.submitted if settings.auto_submit
-                        else ApplicationStatus.paused
-                    )
-                    app_db.submitted_at = datetime.utcnow() if settings.auto_submit else None
-                    app_db.screenshot_paths = screenshot_paths
-                submitted += 1
+                    app_db.status = ApplicationStatus.submitted
+                    app_db.submitted_at = datetime.utcnow()
+                    existing = app_db.screenshot_paths or []
+                    app_db.screenshot_paths = existing + screenshot_paths
+                    app_db.confirmation_text = final
+                logger.info(f"[executor] Job {job_id} submitted successfully.")
             else:
-                job_db.status = JobStatus.failed
+                job_db.status = JobStatus.filled  # revert — still filled, not submitted
                 if app_db:
-                    app_db.status = ApplicationStatus.failed
-                    app_db.error_log = final_msg
-                    app_db.screenshot_paths = screenshot_paths
+                    app_db.status = ApplicationStatus.filled
+                    app_db.error_log = final
+                logger.error(f"[executor] Job {job_id} submit failed: {final[:200]}")
 
-    logger.info(f"[executor] Done. Submitted {submitted} applications.")
-    return submitted
+        return {"ok": success, "message": final, "screenshots": len(screenshot_paths)}
+
+    except Exception as e:
+        async with get_db() as db:
+            job_db = await db.get(Job, job_id)
+            if job_db:
+                job_db.status = JobStatus.filled  # revert to filled so user can retry
+        logger.error(f"[executor] submit_job error for job {job_id}: {e}")
+        return {"ok": False, "message": str(e)}
