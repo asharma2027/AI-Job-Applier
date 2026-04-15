@@ -39,7 +39,7 @@ def _wrap_with_usage_tracking(llm, model_name: str):
 
 
 class Settings(BaseSettings):
-    # Google AI Studio (primary — free tier)
+    # Google AI Studio (primary — Paid Tier 1)
     google_api_key: str = ""
     xai_api_key: str = ""
     xai_base_url: str = "https://api.x.ai/v1"
@@ -47,14 +47,24 @@ class Settings(BaseSettings):
     # Optional fallback provider
     openai_api_key: str = ""
 
-    # Model selection (Gemini 2.5 split by task)
+    # Model selection (best-in-class per task, April 2026)
     llm_provider: str = "google"
-    llm_model_fast: str = "gemini-2.5-flash"     # scraping, analysis, critic, form-filling
-    llm_model_quality: str = "gemini-2.5-pro"    # JD analysis, resume routing
-    llm_model_analyzer: str = "grok-4.20-0309-reasoning"
+    # Fast: Gemini 3 Flash — 3× faster than Pro, leads SWE-bench coding (78%), cheapest Google model.
+    # Used for: scraping, form-filling, quick analysis, boilerplate generation.
+    llm_model_fast: str = "gemini-3-flash"
+    # Quality: Gemini 3.1 Pro — deepest Google reasoning, 2M context, best for complex multi-step tasks.
+    # Used for: JD analysis, resume category routing, long-context document understanding.
+    llm_model_quality: str = "gemini-3.1-pro"
+    # Analyzer: Grok 4.20 Multi-Agent — 4-agent internal debate, 65% lower hallucination rate,
+    # 2M context. Best for high-stakes structured extraction (JD parsing, fit scoring).
+    llm_model_analyzer: str = "grok-4.20-multi-agent-0309"
+    # Critic: Grok 4.1 Fast Reasoning — fast reasoning at $0.20/$0.50 per 1M tokens.
+    # Ideal for self-refine passes: verify, critique, and tighten generated content cheaply.
     llm_model_critic: str = "grok-4-1-fast-reasoning"
-    llm_model_browser_fast: str = "gemini-2.5-flash"
-    llm_model_browser_quality: str = "gemini-2.5-pro"
+    # Browser Fast: Gemini 3 Flash — low latency, handles multimodal page content well.
+    llm_model_browser_fast: str = "gemini-3-flash"
+    # Browser Quality: Gemini 2.5 Flash — battle-tested with browser-use library for complex automation.
+    llm_model_browser_quality: str = "gemini-2.5-flash"
 
     # Credentials
     handshake_email: str = ""
@@ -289,7 +299,6 @@ def update_env_file(updates: dict):
         for i, line in enumerate(lines):
             line_str = line.strip()
             if line_str.startswith(key + "=") or line_str.startswith(f"#{key}=") or line_str.startswith(f"# {key}="):
-                # keep indentation or just overwrite
                 lines[i] = f"{key}={v}\n"
                 found = True
                 break
@@ -301,7 +310,6 @@ def update_env_file(updates: dict):
     
     # Update in-memory settings
     for k, v in updates.items():
-        # Handle type casting for specific fields
         if hasattr(settings, k):
             if k in ('auto_submit', 'dry_run', 'stealth_headless'):
                 v = str(v).lower() in ('true', '1', 't', 'y', 'yes')

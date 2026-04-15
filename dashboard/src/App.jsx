@@ -80,6 +80,39 @@ function useNotifications(queueCount, toast) {
   }, [queueCount, toast])
 }
 
+// ── Model name shortener (used in gauge + usage page) ────────────────────
+function shortModelName(model) {
+  return model
+    .replace('gemini-3.1-flash-lite', 'G3.1 FL-Lite')
+    .replace('gemini-3.1-pro',        'G3.1 Pro')
+    .replace('gemini-3-flash',         'G3 Flash')
+    .replace('gemini-2.5-flash-lite',  'G2.5 FL-Lite')
+    .replace('gemini-2.5-flash',       'G2.5 Flash')
+    .replace('gemini-2.5-pro',         'G2.5 Pro')
+    .replace('gemini-2-flash',         'G2 Flash')
+    .replace('grok-4.20-multi-agent-0309',   'Grok 4.20 MA')
+    .replace('grok-4.20-0309-reasoning',     'Grok 4.20 R')
+    .replace('grok-4.20-0309-non-reasoning', 'Grok 4.20 NR')
+    .replace('grok-4-1-fast-reasoning',      'Grok 4.1f R')
+    .replace('grok-4-1-fast-non-reasoning',  'Grok 4.1f NR')
+}
+
+function longModelName(model) {
+  return model
+    .replace('gemini-3.1-flash-lite', 'Gemini 3.1 Flash Lite')
+    .replace('gemini-3.1-pro',        'Gemini 3.1 Pro')
+    .replace('gemini-3-flash',         'Gemini 3 Flash')
+    .replace('gemini-2.5-flash-lite',  'Gemini 2.5 Flash Lite')
+    .replace('gemini-2.5-flash',       'Gemini 2.5 Flash')
+    .replace('gemini-2.5-pro',         'Gemini 2.5 Pro')
+    .replace('gemini-2-flash',         'Gemini 2 Flash')
+    .replace('grok-4.20-multi-agent-0309',   'Grok 4.20 Multi-Agent')
+    .replace('grok-4.20-0309-reasoning',     'Grok 4.20 Reasoning')
+    .replace('grok-4.20-0309-non-reasoning', 'Grok 4.20 Non-Reasoning')
+    .replace('grok-4-1-fast-reasoning',      'Grok 4.1 Fast Reasoning')
+    .replace('grok-4-1-fast-non-reasoning',  'Grok 4.1 Fast Non-Reasoning')
+}
+
 // ── Usage Gauge (persistent, all tabs) ──────────────────────────────────
 function UsageGauge({ onClick }) {
   const [data, setData] = useState(null)
@@ -108,7 +141,7 @@ function UsageGauge({ onClick }) {
         <span style={{ fontSize: 14 }}>📊</span>
         <span>API</span>
         <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--mono)' }}>
-          {data.total_requests_today}/{data.total_limit_today}
+          {data.total_requests_today}/{data.total_limit_today > 0 ? data.total_limit_today : '∞'}
         </span>
       </div>
       <div className="usage-gauge-track">
@@ -118,16 +151,15 @@ function UsageGauge({ onClick }) {
         {Object.entries(models).map(([model, info]) => {
           const mPct = info.pct || 0
           const mColor = mPct >= 80 ? 'var(--red)' : mPct >= 50 ? 'var(--amber)' : 'var(--green)'
-          const shortName = model.replace('gemini-2.5-', '').replace('gemini-', '')
           return (
             <span key={model} className="usage-gauge-model">
               <span className="usage-gauge-model-dot" style={{ background: mColor }} />
-              {shortName} {info.requests}/{info.limit || '∞'}
+              {shortModelName(model)} {info.requests}/{info.limit > 0 ? info.limit : '∞'}
             </span>
           )
         })}
       </div>
-      {data.plan_type === 'pay_as_you_go' && data.monthly_cost_usd > 0 && (
+      {data.monthly_cost_usd > 0 && (
         <span style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 600 }}>
           ${data.monthly_cost_usd.toFixed(2)} this month
         </span>
@@ -1632,9 +1664,9 @@ function SettingsPage({ toast }) {
               <option value="xai">xAI</option>
             </select>
           </div>
-          <SettingsFormField label="Fast Model (fallback)" name="llm_model_fast" formData={formData} onChange={handleChange} />
-          <SettingsFormField label="Quality Model (fallback)" name="llm_model_quality" formData={formData} onChange={handleChange} />
-          <SettingsFormField label="Analyzer Model (JD parsing/routing)" name="llm_model_analyzer" formData={formData} onChange={handleChange} />
+          <SettingsFormField label="Fast Model (scraping, form-filling)" name="llm_model_fast" formData={formData} onChange={handleChange} />
+          <SettingsFormField label="Quality Model (JD analysis, routing)" name="llm_model_quality" formData={formData} onChange={handleChange} />
+          <SettingsFormField label="Analyzer Model (multi-agent JD parsing)" name="llm_model_analyzer" formData={formData} onChange={handleChange} />
           <SettingsFormField label="Critic Model (self-refine pass)" name="llm_model_critic" formData={formData} onChange={handleChange} />
           <SettingsFormField label="Browser Fast Model (sourcer/executor)" name="llm_model_browser_fast" formData={formData} onChange={handleChange} />
           <SettingsFormField label="Browser Quality Model (optional)" name="llm_model_browser_quality" formData={formData} onChange={handleChange} />
@@ -1663,7 +1695,7 @@ function UsagePage({ toast }) {
 
   useEffect(() => {
     if (data) {
-      setPlanType(data.plan_type || 'free')
+      setPlanType(data.plan_type || 'paid_tier_1')
       setBudget(data.monthly_budget_usd || '')
     }
   }, [data])
@@ -1745,17 +1777,16 @@ function UsagePage({ toast }) {
               const reqLimit = limits.requests || 0
               const pct = reqLimit > 0 ? Math.min((req / reqLimit) * 100, 100) : 0
               const color = pct >= 80 ? 'var(--red)' : pct >= 50 ? 'var(--amber)' : 'var(--green)'
-              const shortName = model.replace('gemini-2.5-', '').replace('grok-', 'GROK ').toUpperCase()
               return (
                 <div key={model} className="usage-model-card" style={{ borderLeft: `3px solid ${color}` }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: 15 }}>{shortName}</div>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>{longModelName(model)}</div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>{model}</div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <div style={{ fontFamily: 'var(--mono)', fontWeight: 800, fontSize: 22, color }}>{req}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>/ {reqLimit || '∞'} requests</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>/ {reqLimit > 0 ? reqLimit.toLocaleString() : '∞'} requests</div>
                     </div>
                   </div>
                   <div className="usage-progress-track">
@@ -1780,18 +1811,15 @@ function UsagePage({ toast }) {
         <div style={{ marginBottom: 32 }}>
           <h3 style={{ marginBottom: 16, marginTop: 0 }}>This Month</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16 }}>
-            {Object.entries(monthlyUsage).map(([model, stats]) => {
-              const shortName = model.replace('gemini-2.5-', '').toUpperCase()
-              return (
-                <div key={model} className="stat-card">
-                  <div className="stat-value">{stats.requests}</div>
-                  <div className="stat-label">{shortName} requests</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                    {formatTokens(stats.input_tokens)} in / {formatTokens(stats.output_tokens)} out
-                  </div>
+            {Object.entries(monthlyUsage).map(([model, stats]) => (
+              <div key={model} className="stat-card">
+                <div className="stat-value">{stats.requests}</div>
+                <div className="stat-label">{longModelName(model)} requests</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  {formatTokens(stats.input_tokens)} in / {formatTokens(stats.output_tokens)} out
                 </div>
-              )
-            })}
+              </div>
+            ))}
             {data.monthly_cost_usd > 0 && (
               <div className="usage-cost-card">
                 <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--accent-light)', marginBottom: 4 }}>
@@ -1836,23 +1864,52 @@ function UsagePage({ toast }) {
         </div>
 
         <div style={{ padding: 20, background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)' }}>
-          <h4 style={{ marginTop: 0, marginBottom: 8, fontSize: 14 }}>Google AI Plan Details</h4>
-          {planType === 'free' ? (
+          <h4 style={{ marginTop: 0, marginBottom: 8, fontSize: 14 }}>API Plan Details</h4>
+          {planType === 'paid_tier_1' ? (
             <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-              <strong style={{ color: 'var(--text-primary)' }}>Free Tier Limits:</strong>
+              <strong style={{ color: 'var(--text-primary)' }}>Google AI Paid Tier 1 — Daily Request Limits (RPD):</strong>
+              <ul style={{ paddingLeft: 20, margin: '8px 0 12px' }}>
+                <li>Gemini 3 Flash: 10,000 req/day (1K RPM, 2M TPM)</li>
+                <li>Gemini 3.1 Flash Lite: 150,000 req/day (4K RPM, 4M TPM)</li>
+                <li>Gemini 3.1 Pro: 250 req/day (25 RPM, 2M TPM)</li>
+                <li>Gemini 2.5 Flash: 10,000 req/day (1K RPM, 1M TPM)</li>
+                <li>Gemini 2.5 Pro: 1,000 req/day (150 RPM, 2M TPM)</li>
+                <li>Gemini 2.5 Flash Lite / Gemini 2 Flash: Unlimited req/day</li>
+                <li>Limits reset daily at midnight Pacific Time</li>
+              </ul>
+              <strong style={{ color: 'var(--text-primary)' }}>Pricing (per 1M tokens):</strong>
               <ul style={{ paddingLeft: 20, margin: '8px 0 0' }}>
-                <li>Gemini 2.5 Flash: 500 requests/day, ~1M tokens/min</li>
-                <li>Gemini 2.5 Pro: 25 requests/day, ~1M tokens/min</li>
+                <li>Gemini 3 Flash: $0.50 in / $3.00 out</li>
+                <li>Gemini 3.1 Flash Lite: $0.10 in / $0.40 out</li>
+                <li>Gemini 3.1 Pro: $2.00 in / $8.00 out</li>
+                <li>Gemini 2.5 Flash: $0.15 in / $0.60 out</li>
+                <li>Gemini 2.5 Pro: $1.25 in / $10.00 out</li>
+                <li>Grok 4.20 Multi-Agent: $2.00 in / $6.00 out</li>
+                <li>Grok 4.20 Reasoning / Non-Reasoning: $2.00 in / $6.00 out</li>
+                <li>Grok 4.1 Fast (Reasoning / Non-Reasoning): $0.20 in / $0.50 out</li>
+              </ul>
+            </div>
+          ) : planType === 'free' ? (
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              <strong style={{ color: 'var(--text-primary)' }}>Google AI Free Tier Limits:</strong>
+              <ul style={{ paddingLeft: 20, margin: '8px 0 0' }}>
+                <li>Gemini 2.5 Flash: 500 requests/day</li>
+                <li>Gemini 2.5 Pro: 25 requests/day</li>
                 <li>Limits reset daily at midnight Pacific Time</li>
                 <li>No cost — completely free</li>
               </ul>
             </div>
           ) : (
             <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-              <strong style={{ color: 'var(--text-primary)' }}>Pay-as-you-go Pricing:</strong>
+              <strong style={{ color: 'var(--text-primary)' }}>Pay-as-you-go Pricing (per 1M tokens):</strong>
               <ul style={{ paddingLeft: 20, margin: '8px 0 0' }}>
-                <li>Flash: $0.15 / 1M input tokens, $0.60 / 1M output tokens</li>
-                <li>Pro: $1.25 / 1M input tokens, $10.00 / 1M output tokens</li>
+                <li>Gemini 3 Flash: $0.50 in / $3.00 out</li>
+                <li>Gemini 3.1 Flash Lite: $0.10 in / $0.40 out</li>
+                <li>Gemini 3.1 Pro: $2.00 in / $8.00 out</li>
+                <li>Gemini 2.5 Flash: $0.15 in / $0.60 out</li>
+                <li>Gemini 2.5 Pro: $1.25 in / $10.00 out</li>
+                <li>Grok 4.20 Multi-Agent: $2.00 in / $6.00 out</li>
+                <li>Grok 4.1 Fast: $0.20 in / $0.50 out</li>
                 <li>No daily request limits</li>
               </ul>
             </div>
