@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     dry_run: bool = False
     scrape_interval_minutes: int = 60
     min_relevance_score: float = 0.5
+    max_pending_submissions: int = 2  # max jobs that can be in 'filled' state at once
 
     # Dashboard
     dashboard_host: str = "127.0.0.1"
@@ -304,7 +305,7 @@ def update_env_file(updates: dict):
         if hasattr(settings, k):
             if k in ('auto_submit', 'dry_run', 'stealth_headless'):
                 v = str(v).lower() in ('true', '1', 't', 'y', 'yes')
-            elif k in ['scrape_interval_minutes', 'dashboard_port']:
+            elif k in ['scrape_interval_minutes', 'dashboard_port', 'max_pending_submissions']:
                 v = int(v)
             elif k == 'min_relevance_score':
                 v = float(v)

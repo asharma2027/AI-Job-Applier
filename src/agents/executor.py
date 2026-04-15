@@ -2,8 +2,8 @@
 Execution Agent — browser-use to fill and submit job application forms.
 
 Two explicit stages, each triggered manually from the dashboard:
-  1. fill_job(job_id)   — fills every field, stops before Submit, saves screenshots
-  2. submit_job(job_id) — re-opens the application and clicks the final Submit button
+  1. fill_job(job_id)   — fills every field, stops before Submit, keeps browser open for user review
+  2. User manually reviews the open browser window and clicks Submit themselves
 
 Works on any ATS: Workday, Greenhouse, Lever, iCIMS, proprietary sites.
 """
@@ -13,6 +13,7 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select
 
@@ -22,6 +23,28 @@ from src.memory.memory_store import build_rules_block
 from src.models import Job, JobStatus, Application, ApplicationStatus, CoverLetter, CoverLetterStatus
 
 logger = logging.getLogger(__name__)
+
+# ── Live browser sessions kept open for user review after fill ────────────────
+# Maps job_id → BrowserSession instance.  Cleared when user confirms or discards.
+_open_fill_sessions: dict[int, Any] = {}
+
+
+def has_open_browser_session(job_id: int) -> bool:
+    return job_id in _open_fill_sessions
+
+
+def open_browser_session_ids() -> list[int]:
+    return list(_open_fill_sessions.keys())
+
+
+async def close_fill_session(job_id: int) -> None:
+    """Force-close the browser window kept open for user review."""
+    session = _open_fill_sessions.pop(job_id, None)
+    if session:
+        try:
+            await session.kill()
+        except Exception as e:
+            logger.warning(f"[executor] Error killing browser session for job {job_id}: {e}")
 
 
 def load_user_profile() -> dict:
@@ -186,8 +209,28 @@ INSTRUCTIONS:
             screenshot_paths.append(str(sc_path))
 
     llm = settings.get_browser_use_llm_for_task("executor")
-    agent = Agent(task=task, llm=llm)
-    agent.on_page_complete = on_page_complete
+
+    # Create a visible, persistent browser session so the window stays open after fill.
+    # The user can then switch to that window, review the completed form, and click Submit.
+    browser_session = None
+    try:
+        from browser_use import BrowserSession
+        browser_session = BrowserSession(
+            headless=False,   # must be visible so the user can see and interact with it
+            keep_alive=True,  # do NOT close the browser when agent.run() finishes
+        )
+        # Register immediately so cancellation paths can always find and close it.
+        _open_fill_sessions[job_id] = browser_session
+        agent = Agent(task=task, llm=llm, browser_session=browser_session)
+    except Exception as e:
+        logger.warning(f"[executor] Could not create persistent BrowserSession ({e}); falling back to default agent.")
+        browser_session = None
+        agent = Agent(task=task, llm=llm)
+
+    try:
+        agent.on_page_complete = on_page_complete
+    except Exception:
+        pass
 
     try:
         result = await agent.run()
@@ -216,18 +259,33 @@ INSTRUCTIONS:
                 if app_db:
                     app_db.status = ApplicationStatus.filled
                     app_db.screenshot_paths = screenshot_paths
-                logger.info(f"[executor] Job {job_id} filled successfully. Awaiting manual submit.")
+                if browser_session:
+                    logger.info(
+                        f"[executor] Job {job_id} filled — browser window kept open for user review. "
+                        "Switch to the browser window, review the form, then click Submit yourself."
+                    )
+                else:
+                    logger.info(f"[executor] Job {job_id} filled successfully. Awaiting manual submit.")
             else:
                 job_db.status = JobStatus.failed
                 if app_db:
                     app_db.status = ApplicationStatus.failed
                     app_db.error_log = final
                     app_db.screenshot_paths = screenshot_paths
+                if browser_session:
+                    await close_fill_session(job_id)
                 logger.error(f"[executor] Job {job_id} fill failed: {final[:200]}")
 
         return {"ok": success, "message": final, "screenshots": len(screenshot_paths)}
 
+    except asyncio.CancelledError:
+        # Python 3.9+ CancelledError is a BaseException and bypasses `except Exception`.
+        # Always close any keep_alive browser session on cancellation to avoid orphan windows.
+        await close_fill_session(job_id)
+        raise
+
     except Exception as e:
+        await close_fill_session(job_id)
         async with get_db() as db:
             job_db = await db.get(Job, job_id)
             if job_db:

@@ -556,12 +556,14 @@ _jobs_submitting: set[int] = set()
 
 @app.get("/api/pipeline/status")
 async def pipeline_status():
+    from src.agents.executor import open_browser_session_ids
     return {
         "filling": list(_jobs_filling),
         "submitting": list(_jobs_submitting),
         "sourcing": list(_sourcing_running),
         "analyzing": "analyze" in _running_tasks and not _running_tasks.get("analyze", asyncio.Future()).done(),
         "running_tasks": [tid for tid, t in _running_tasks.items() if not t.done()],
+        "browser_open": open_browser_session_ids(),  # job IDs with browser windows kept alive
     }
 
 
@@ -580,6 +582,21 @@ async def trigger_fill(job_id: int):
                 status_code=400,
                 detail=f"Job is in status '{job.status}'. Must be 'queued' to fill."
             )
+        # Enforce max pending submissions limit
+        from src.config import settings as _settings
+        filled_count_result = await db.execute(
+            select(func.count(Job.id)).where(Job.status == JobStatus.filled)
+        )
+        filled_count = filled_count_result.scalar() or 0
+        if filled_count >= _settings.max_pending_submissions:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"You already have {filled_count} application(s) waiting for your review "
+                    f"(limit: {_settings.max_pending_submissions}). Switch to the open browser "
+                    "window(s), submit those applications, and confirm them in the dashboard first."
+                ),
+            )
 
     async def _run():
         _jobs_filling.add(job_id)
@@ -588,6 +605,8 @@ async def trigger_fill(job_id: int):
             await fill_job(job_id)
         except asyncio.CancelledError:
             logger.info(f"[executor] Fill cancelled for job {job_id}")
+            from src.agents.executor import close_fill_session
+            await close_fill_session(job_id)
             async with get_db() as db:
                 job_db = await db.get(Job, job_id)
                 if job_db and job_db.status == JobStatus.filling:
@@ -635,6 +654,57 @@ async def trigger_submit(job_id: int):
 
     _create_tracked_task(task_id, _run())
     return {"ok": True, "message": "Submit started in background. Watch the Activity Log for progress."}
+
+
+@app.post("/api/jobs/{job_id}/confirm-submitted")
+async def confirm_submitted(job_id: int):
+    """Mark a job as applied after the user manually clicked the submit button on the application page."""
+    from src.agents.executor import close_fill_session
+    await close_fill_session(job_id)
+    async with get_db() as db:
+        job = await db.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.filled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job is in status '{job.status}'. Must be 'filled' to confirm submission.",
+            )
+        job.status = JobStatus.applied
+        app_result = await db.execute(
+            select(Application).where(Application.job_id == job_id).order_by(Application.id.desc())
+        )
+        app_db = app_result.scalars().first()
+        if app_db:
+            app_db.status = ApplicationStatus.submitted
+            app_db.submitted_at = datetime.utcnow()
+        await db.commit()
+    return {"ok": True, "status": "applied"}
+
+
+@app.post("/api/jobs/{job_id}/discard-fill")
+async def discard_fill(job_id: int):
+    """Close the browser kept open for review and reset job back to queued so it can be re-filled."""
+    from src.agents.executor import close_fill_session
+    await close_fill_session(job_id)
+    async with get_db() as db:
+        job = await db.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.filled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job is in status '{job.status}'. Must be 'filled' to discard.",
+            )
+        job.status = JobStatus.queued
+        app_result = await db.execute(
+            select(Application).where(Application.job_id == job_id).order_by(Application.id.desc())
+        )
+        app_db = app_result.scalars().first()
+        if app_db:
+            app_db.status = ApplicationStatus.queued
+        await db.commit()
+    return {"ok": True, "status": "queued"}
 
 
 # ── Usage Tracking ────────────────────────────────────────────────────────────

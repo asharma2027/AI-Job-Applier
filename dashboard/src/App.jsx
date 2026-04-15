@@ -296,7 +296,7 @@ function SourcePage({ toast }) {
           {[
             { step: '1', label: 'Source', desc: 'Scrape a platform to find internship listings', active: true },
             { step: '2', label: 'Fill Form', desc: 'AI fills every field — stops before Submit', active: false },
-            { step: '3', label: 'Submit', desc: 'You click Submit after reviewing the filled form', active: false },
+            { step: '3', label: 'Review & Confirm', desc: 'Open the filled form, click Submit yourself, then confirm in the dashboard', active: false },
           ].map(s => (
             <div key={s.step} style={{ textAlign: 'center', opacity: s.active ? 1 : 0.45 }}>
               <div style={{
@@ -678,6 +678,8 @@ function JobsPage({ toast }) {
   const statuses = ['new', 'analyzed', 'queued', 'pending_cl_upload',
     'filling', 'filled', 'submitting', 'applying', 'applied', 'failed', 'skipped']
 
+  const [browserOpen, setBrowserOpen] = useState([]) // job IDs with live browser windows
+
   useEffect(() => {
     if (!pipelineStatus) return
     const filling = pipelineStatus.filling || []
@@ -689,6 +691,7 @@ function JobsPage({ toast }) {
       return next
     })
     setAnalyzeBusy(!!pipelineStatus.analyzing)
+    setBrowserOpen(pipelineStatus.browser_open || [])
   }, [pipelineStatus])
 
   const anyBusy = Object.keys(actionBusy).length > 0 || analyzeBusy
@@ -745,28 +748,33 @@ function JobsPage({ toast }) {
     }
   }
 
-  const triggerSubmit = async (job) => {
+  const confirmSubmit = async (job) => {
     if (actionBusy[job.id]) return
-    if (!window.confirm(`Submit "${job.title}" at ${job.company}?\n\nThis will click the final Submit button. Make sure you have reviewed the filled form screenshots first.`)) return
-    setActionBusy(p => ({ ...p, [job.id]: 'submit' }))
+    setActionBusy(p => ({ ...p, [job.id]: 'confirm' }))
     try {
-      const r = await fetch(`${API}/jobs/${job.id}/submit`, { method: 'POST' })
+      const r = await fetch(`${API}/jobs/${job.id}/confirm-submitted`, { method: 'POST' })
       const data = await r.json()
-      if (!r.ok) { toast(data.detail || 'Failed to start submit', 'error'); setActionBusy(p => { const n = { ...p }; delete n[job.id]; return n }); return }
-      toast(`Submitting "${job.title}"… watch Activity Log`, 'success')
-      const poll = setInterval(async () => {
-        try {
-          const jr = await fetch(`${API}/jobs/${job.id}`)
-          const jd = await jr.json()
-          if (jd.status !== 'submitting') {
-            clearInterval(poll)
-            setActionBusy(p => { const n = { ...p }; delete n[job.id]; return n })
-            refetch()
-            if (jd.status === 'applied') toast(`Successfully submitted "${job.title}"!`, 'success')
-            else toast(`Submit finished: ${jd.status}`, jd.status === 'failed' ? 'error' : 'success')
-          }
-        } catch { clearInterval(poll) }
-      }, 3000)
+      if (!r.ok) { toast(data.detail || 'Failed to confirm submission', 'error'); setActionBusy(p => { const n = { ...p }; delete n[job.id]; return n }); return }
+      toast(`"${job.title}" marked as submitted!`, 'success')
+      refetch(); refetchPipeline()
+      setActionBusy(p => { const n = { ...p }; delete n[job.id]; return n })
+    } catch (e) {
+      toast('Error: ' + e.message, 'error')
+      setActionBusy(p => { const n = { ...p }; delete n[job.id]; return n })
+    }
+  }
+
+  const discardFill = async (job) => {
+    if (actionBusy[job.id]) return
+    if (!window.confirm(`Discard the filled form for "${job.title}"?\n\nThis will close the browser window and reset the job to queued so it can be re-filled.`)) return
+    setActionBusy(p => ({ ...p, [job.id]: 'discard' }))
+    try {
+      const r = await fetch(`${API}/jobs/${job.id}/discard-fill`, { method: 'POST' })
+      const data = await r.json()
+      if (!r.ok) { toast(data.detail || 'Failed to discard', 'error'); setActionBusy(p => { const n = { ...p }; delete n[job.id]; return n }); return }
+      toast(`Fill discarded — "${job.title}" reset to queued`, 'success')
+      refetch(); refetchPipeline()
+      setActionBusy(p => { const n = { ...p }; delete n[job.id]; return n })
     } catch (e) {
       toast('Error: ' + e.message, 'error')
       setActionBusy(p => { const n = { ...p }; delete n[job.id]; return n })
@@ -811,7 +819,7 @@ function JobsPage({ toast }) {
         </div>
       </div>
 
-      <div style={{ padding: '0 40px 16px' }}>
+        <div style={{ padding: '0 40px 16px' }}>
         <div style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--text-muted)', flexWrap: 'wrap', alignItems: 'center' }}>
           <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Stages:</span>
           <span className="tag tag-muted">new → analyzed → queued</span>
@@ -820,7 +828,9 @@ function JobsPage({ toast }) {
           <span>→</span>
           <span className="tag" style={{ background: 'rgba(139,92,246,.15)', color: '#a78bfa', border: '1px solid rgba(139,92,246,.25)' }}>filled</span>
           <span>→</span>
-          <span className="tag" style={{ background: 'rgba(16,185,129,.15)', color: 'var(--green)', border: '1px solid rgba(16,185,129,.25)' }}>Submit</span>
+          <span className="tag" style={{ background: 'rgba(245,158,11,.15)', color: 'var(--amber)', border: '1px solid rgba(245,158,11,.25)' }}>Review ↗ (you submit)</span>
+          <span>→</span>
+          <span className="tag" style={{ background: 'rgba(16,185,129,.15)', color: 'var(--green)', border: '1px solid rgba(16,185,129,.25)' }}>Confirm Submitted</span>
           <span>→</span>
           <span className="tag tag-muted">applied</span>
         </div>
@@ -838,15 +848,16 @@ function JobsPage({ toast }) {
             <table>
               <thead><tr>
                 <th>Title</th><th>Company</th><th>Source</th><th>Score</th><th>Status</th>
-                <th>Stage 2 — Fill</th><th>Stage 3 — Submit</th><th></th>
+                <th>Stage 2 — Fill</th><th>Stage 3 — You Submit</th><th></th>
               </tr></thead>
               <tbody>
                 {(jobs || []).map(job => {
                   const busy = actionBusy[job.id]
                   const canFill = ['queued', 'failed', 'filled'].includes(job.status)
-                  const canSubmit = job.status === 'filled'
+                  const canConfirm = job.status === 'filled'
                   const isFilling = busy === 'fill' || job.status === 'filling'
-                  const isSubmitting = busy === 'submit' || job.status === 'submitting'
+                  const isConfirming = busy === 'confirm'
+                  const hasBrowserOpen = browserOpen.includes(job.id)
                   return (
                     <tr key={job.id}>
                       <td className="td-title" title={job.title}>{job.title}</td>
@@ -876,24 +887,44 @@ function JobsPage({ toast }) {
                       </td>
 
                       <td>
-                        {isSubmitting
-                          ? <span style={{ fontSize: 12, color: 'var(--green)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <span className="spin" style={{ display: 'inline-block' }}>⚙️</span> Submitting…
-                              <button className="btn-stop" onClick={() => stopAgentTask(`submit_${job.id}`, toast)}>Stop</button>
-                            </span>
-                          : canSubmit
-                            ? <button className="btn btn-success" style={{ padding: '5px 12px', fontSize: 12 }}
-                                onClick={() => triggerSubmit(job)} disabled={!!busy}>
-                                Submit
-                              </button>
-                            : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{job.status === 'applied' ? '✓ submitted' : '—'}</span>
+                        {canConfirm
+                          ? <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              {hasBrowserOpen
+                                ? <div style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <span>🌐</span> Browser open — switch to it, review &amp; submit
+                                  </div>
+                                : <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                    Form filled (browser closed — check screenshots)
+                                  </div>
+                              }
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                <button
+                                  className="btn btn-success"
+                                  style={{ padding: '5px 12px', fontSize: 12 }}
+                                  onClick={() => confirmSubmit(job)}
+                                  disabled={!!busy}
+                                >
+                                  {isConfirming ? '…' : 'Confirm Submitted'}
+                                </button>
+                                <button
+                                  className="btn btn-danger"
+                                  style={{ padding: '5px 10px', fontSize: 11 }}
+                                  onClick={() => discardFill(job)}
+                                  disabled={!!busy}
+                                  title="Close browser window and reset job to queued"
+                                >
+                                  Discard
+                                </button>
+                              </div>
+                            </div>
+                          : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{job.status === 'applied' ? '✓ submitted' : '—'}</span>
                         }
                       </td>
 
                       <td>
                         <div style={{ display: 'flex', gap: 6 }}>
                           <a href={job.url} target="_blank" rel="noreferrer" className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: 12 }}>↗</a>
-                          {['applied', 'filled', 'filling', 'submitting'].includes(job.status) && (
+                          {['applied', 'filled', 'filling'].includes(job.status) && (
                             <button className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => setScreenshotJobId(job.id)}>🖼</button>
                           )}
                         </div>
@@ -1035,50 +1066,76 @@ function ProfilePage({ toast }) {
   const { data: credSettings, refetch: refetchCreds } = useApi(`${API}/settings`)
   const [form, setForm] = useState({})
   const [credForm, setCredForm] = useState({})
-  const [saving, setSaving] = useState(false)
-  const [savingCreds, setSavingCreds] = useState(false)
+  const [autoSaveStatus, setAutoSaveStatus] = useState('') // '' | 'saving' | 'saved' | 'error'
+  const serverProfileRef = useRef(null)
+  const serverCredRef = useRef(null)
 
-  useEffect(() => { if (profile) setForm(profile) }, [profile])
   useEffect(() => {
-    if (credSettings) setCredForm({
-      uchicago_cnet_id:   credSettings.uchicago_cnet_id   ?? '',
-      uchicago_password:  credSettings.uchicago_password  ?? '',
-      handshake_email:    credSettings.handshake_email    ?? '',
-      handshake_password: credSettings.handshake_password ?? '',
-    })
+    if (profile) {
+      setForm(profile)
+      serverProfileRef.current = JSON.stringify(profile)
+    }
+  }, [profile])
+
+  useEffect(() => {
+    if (credSettings) {
+      const creds = {
+        uchicago_cnet_id:   credSettings.uchicago_cnet_id   ?? '',
+        uchicago_password:  credSettings.uchicago_password  ?? '',
+        handshake_email:    credSettings.handshake_email    ?? '',
+        handshake_password: credSettings.handshake_password ?? '',
+      }
+      setCredForm(creds)
+      serverCredRef.current = JSON.stringify(creds)
+    }
   }, [credSettings])
 
+  // Autosave profile form
+  const formStr = JSON.stringify(form)
+  useEffect(() => {
+    if (!serverProfileRef.current || formStr === serverProfileRef.current) return
+    const timer = setTimeout(async () => {
+      setAutoSaveStatus('saving')
+      try {
+        const r = await fetch(`${API}/profile`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: formStr,
+        })
+        if (r.ok) {
+          serverProfileRef.current = formStr
+          setAutoSaveStatus('saved')
+          setTimeout(() => setAutoSaveStatus(s => s === 'saved' ? '' : s), 2000)
+        } else {
+          setAutoSaveStatus('error')
+          setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 3000)
+        }
+      } catch {
+        setAutoSaveStatus('error')
+        setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 3000)
+      }
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [formStr])
+
+  // Autosave credentials
+  const credStr = JSON.stringify(credForm)
+  useEffect(() => {
+    if (!serverCredRef.current || credStr === serverCredRef.current) return
+    const timer = setTimeout(async () => {
+      try {
+        const r = await fetch(`${API}/settings`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: credStr,
+        })
+        if (r.ok) serverCredRef.current = credStr
+      } catch {}
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [credStr])
+
   const set = (path, value) => setFormAtPath(setForm, path, value)
-
-  const save = async () => {
-    setSaving(true)
-    try {
-      const r = await fetch(`${API}/profile`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      })
-      if (!r.ok) throw new Error('Failed')
-      toast('Profile saved', 'success')
-      refetch()
-    } catch (e) { toast('Error: ' + e.message, 'error') }
-    setSaving(false)
-  }
-
-  const saveCreds = async () => {
-    setSavingCreds(true)
-    try {
-      const r = await fetch(`${API}/settings`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(credForm),
-      })
-      if (!r.ok) throw new Error('Failed')
-      toast('Credentials saved', 'success')
-      refetchCreds()
-    } catch (e) { toast('Error: ' + e.message, 'error') }
-    setSavingCreds(false)
-  }
 
   if (loading) return <div className="page-content empty"><div className="empty-icon spin">⚙️</div></div>
 
@@ -1086,9 +1143,11 @@ function ProfilePage({ toast }) {
     <div>
       <div className="page-header">
         <div><div className="page-title">Profile</div><div className="page-subtitle">Your info used by the AI to fill application forms</div></div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {autoSaveStatus === 'saving' && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-saving…</span>}
+          {autoSaveStatus === 'saved' && <span style={{ fontSize: 12, color: 'var(--green)' }}>✓ Saved</span>}
+          {autoSaveStatus === 'error' && <span style={{ fontSize: 12, color: 'var(--red)' }}>Save failed</span>}
           <button className="btn btn-ghost" onClick={refetch}>↻ Reload</button>
-          <button className="btn btn-success" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save Profile'}</button>
         </div>
       </div>
       <div className="page-content" style={{ maxWidth: 800 }}>
@@ -1169,14 +1228,9 @@ function ProfilePage({ toast }) {
         </div>
 
         <div className="profile-section">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <div>
-              <h4 style={{ margin: 0 }}>Login Credentials</h4>
-              <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>Stored securely in your local .env file — never sent to any server</p>
-            </div>
-            <button className="btn btn-success" disabled={savingCreds} onClick={saveCreds} style={{ flexShrink: 0 }}>
-              {savingCreds ? 'Saving…' : 'Save Credentials'}
-            </button>
+          <div style={{ marginBottom: 16 }}>
+            <h4 style={{ margin: 0 }}>Login Credentials</h4>
+            <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>Stored securely in your local .env file — auto-saved as you type</p>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
             <div style={{ padding: 16, background: 'var(--surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
@@ -1451,39 +1505,60 @@ function SettingsFormField({ label, name, type = 'text', placeholder = '', formD
 function SettingsPage({ toast }) {
   const { data: settings, loading, refetch } = useApi(`${API}/settings`)
   const [formData, setFormData] = useState({})
-  const [saving, setSaving] = useState(false)
+  const [autoSaveStatus, setAutoSaveStatus] = useState('') // '' | 'saving' | 'saved' | 'error'
+  const serverSettingsRef = useRef(null)
 
-  useEffect(() => { if (settings) setFormData(settings) }, [settings])
+  useEffect(() => {
+    if (settings) {
+      setFormData(settings)
+      serverSettingsRef.current = JSON.stringify(settings)
+    }
+  }, [settings])
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target
     setFormData(p => ({ ...p, [name]: type === 'checkbox' ? checked : value }))
   }
 
-  const save = async () => {
-    setSaving(true)
-    try {
-      const r = await fetch(`${API}/settings`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      })
-      if (!r.ok) throw new Error('Failed to save settings')
-      toast('Settings saved to .env', 'success')
-      refetch()
-    } catch (e) { toast('Error: ' + e.message, 'error') }
-    setSaving(false)
-  }
+  // Autosave settings
+  const formDataStr = JSON.stringify(formData)
+  useEffect(() => {
+    if (!serverSettingsRef.current || formDataStr === serverSettingsRef.current) return
+    const timer = setTimeout(async () => {
+      setAutoSaveStatus('saving')
+      try {
+        const r = await fetch(`${API}/settings`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: formDataStr,
+        })
+        if (r.ok) {
+          serverSettingsRef.current = formDataStr
+          setAutoSaveStatus('saved')
+          setTimeout(() => setAutoSaveStatus(s => s === 'saved' ? '' : s), 2000)
+        } else {
+          setAutoSaveStatus('error')
+          setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 3000)
+        }
+      } catch {
+        setAutoSaveStatus('error')
+        setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 3000)
+      }
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [formDataStr])
 
   if (loading) return <div className="page-content empty"><div className="empty-icon spin">⚙️</div></div>
 
   return (
     <div>
       <div className="page-header">
-        <div><div className="page-title">Settings</div><div className="page-subtitle">Manage environment configuration</div></div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div><div className="page-title">Settings</div><div className="page-subtitle">Manage environment configuration — changes are auto-saved</div></div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {autoSaveStatus === 'saving' && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-saving…</span>}
+          {autoSaveStatus === 'saved' && <span style={{ fontSize: 12, color: 'var(--green)' }}>✓ Saved</span>}
+          {autoSaveStatus === 'error' && <span style={{ fontSize: 12, color: 'var(--red)' }}>Save failed</span>}
           <button className="btn btn-ghost" onClick={refetch}>↻ Reload</button>
-          <button className="btn btn-success" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save Changes'}</button>
         </div>
       </div>
       <div className="page-content" style={{ maxWidth: 800 }}>
@@ -1515,9 +1590,9 @@ function SettingsPage({ toast }) {
         </SettingsFormSection>
         <SettingsFormSection title="Pipeline Behavior" desc="Configure how the agent runs">
           <SettingsFormField label="Dry Run (skip browser entirely — just log)" name="dry_run" type="checkbox" formData={formData} onChange={handleChange} />
-          <SettingsFormField label="Auto Submit (not recommended — use the manual Submit button instead)" name="auto_submit" type="checkbox" formData={formData} onChange={handleChange} />
           <SettingsFormField label="Scraping Interval (minutes)" name="scrape_interval_minutes" type="number" formData={formData} onChange={handleChange} />
           <SettingsFormField label="Minimum Relevance Score (0.0 – 1.0)" name="min_relevance_score" formData={formData} onChange={handleChange} />
+          <SettingsFormField label="Max Applications Pending Your Review (filled, not yet submitted)" name="max_pending_submissions" type="number" formData={formData} onChange={handleChange} />
         </SettingsFormSection>
       </div>
     </div>
