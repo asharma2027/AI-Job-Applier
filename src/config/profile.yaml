@@ -1,54 +1,44 @@
-# ============================================================
-# Your Profile — Used by the executor to fill application forms
-# ============================================================
-
 personal:
-  first_name: "Arjun"
-  last_name: "Sharma"
-  email: ""
-  university_email: ""
-  phone: ""
-  linkedin: ""
-  github: ""
-  portfolio: ""
+  first_name: Arjun
+  last_name: Sharma
+  email: ''
+  university_email: ''
+  phone: ''
+  linkedin: ''
+  github: ''
+  portfolio: ''
   address:
-    city: ""
-    state: ""
-    zip: ""
-    country: "United States"
-
+    city: ''
+    state: ''
+    zip: ''
+    country: United States
 education:
-  - institution: ""
-    degree: ""             # e.g. "Bachelor of Science"
-    major: ""              # e.g. "Finance"
-    minor: ""
-    gpa: ""
-    graduation_year: ""
-    graduation_month: ""
-    start_year: ""
-
+- institution: ''
+  degree: ''
+  major: ''
+  minor: ''
+  gpa: ''
+  graduation_year: ''
+  graduation_month: ''
+  start_year: ''
 work_experience:
-  - company: ""
-    title: ""
-    start_date: ""         # e.g. "June 2024"
-    end_date: ""           # "Present" or date
-    location: ""
-    bullets:
-      - ""
-
+- company: ''
+  title: ''
+  start_date: ''
+  end_date: ''
+  location: ''
+  bullets:
+  - ''
 skills:
-  technical: []            # e.g. ["Python", "SQL", "Excel"]
-  languages: []            # e.g. ["English (Native)", "Spanish (Conversational)"]
+  technical: []
+  languages: []
   certifications: []
-
 eligibility:
   authorized_to_work: true
   requires_sponsorship: false
   us_citizen: true
-
-# Generic answers to common screening questions
 screening_defaults:
-  years_of_experience: "0-1"
+  years_of_experience: 0-1
   willing_to_relocate: true
-  available_start_date: "June 2025"
-  salary_expectation: ""
+  available_start_date: June 2025
+  salary_expectation: ''
