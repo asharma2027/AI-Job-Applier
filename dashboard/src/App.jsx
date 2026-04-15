@@ -129,11 +129,28 @@ function UsageGauge({ onClick }) {
     return () => clearInterval(interval)
   }, [])
 
-  if (!data || (data.total_limit_today === 0 && data.monthly_budget_usd === 0)) return null
+  // Only hide if we've never received data yet (null = still loading)
+  // Do NOT hide just because limits are 0 — pay_as_you_go/free plans have 0 limits
+  if (!data) return null
 
   const pct = data.pct_used || 0
   const color = pct >= 80 ? 'var(--red)' : pct >= 50 ? 'var(--amber)' : 'var(--green)'
   const models = data.models || {}
+  const hasModels = Object.keys(models).length > 0
+  const hasRequests = data.total_requests_today > 0
+
+  // If no usage data at all and no limits configured, show a minimal idle state
+  if (!hasRequests && !hasModels && data.monthly_budget_usd === 0 && data.total_limit_today === 0) {
+    return (
+      <div className="usage-gauge-bar-wrap" onClick={onClick} title="Click to view API usage details">
+        <div className="usage-gauge-label">
+          <span style={{ fontSize: 14 }}>📊</span>
+          <span>API</span>
+          <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>No usage today</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="usage-gauge-bar-wrap" onClick={onClick} title="Click to view API usage details">
@@ -144,9 +161,11 @@ function UsageGauge({ onClick }) {
           {data.total_requests_today}/{data.total_limit_today > 0 ? data.total_limit_today : '∞'}
         </span>
       </div>
-      <div className="usage-gauge-track">
-        <div className="usage-gauge-fill" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
-      </div>
+      {data.total_limit_today > 0 && (
+        <div className="usage-gauge-track">
+          <div className="usage-gauge-fill" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
+        </div>
+      )}
       <div className="usage-gauge-models">
         {Object.entries(models).map(([model, info]) => {
           const mPct = info.pct || 0
@@ -1130,7 +1149,8 @@ function ProfilePage({ toast }) {
   const formStr = JSON.stringify(form)
   useEffect(() => {
     if (!serverProfileRef.current || formStr === serverProfileRef.current) {
-      setAutoSaveStatus(s => s === 'saving' ? '' : s)
+      // Only clear if we weren't mid-save — don't interrupt an in-flight save
+      setAutoSaveStatus(s => (s === 'saving' ? s : ''))
       return
     }
     setAutoSaveStatus('saving')
@@ -1144,17 +1164,22 @@ function ProfilePage({ toast }) {
         if (r.ok) {
           serverProfileRef.current = formStr
           setAutoSaveStatus('saved')
-          setTimeout(() => setAutoSaveStatus(s => s === 'saved' ? '' : s), 3000)
+          // Functional update so a rapid second save doesn't clear a fresh 'saved' state
+          setTimeout(() => setAutoSaveStatus(s => (s === 'saved' ? '' : s)), 4000)
         } else {
           setAutoSaveStatus('error')
-          setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 4000)
+          setTimeout(() => setAutoSaveStatus(s => (s === 'error' ? '' : s)), 5000)
         }
       } catch {
         setAutoSaveStatus('error')
-        setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 4000)
+        setTimeout(() => setAutoSaveStatus(s => (s === 'error' ? '' : s)), 5000)
       }
     }, 800)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      // Don't clear 'saved' or 'error' state when the effect re-runs — only clear 'saving'
+      setAutoSaveStatus(s => (s === 'saving' ? '' : s))
+    }
   }, [formStr])
 
   // Autosave credentials
@@ -1591,7 +1616,7 @@ function SettingsPage({ toast }) {
   const formDataStr = JSON.stringify(formData)
   useEffect(() => {
     if (!serverSettingsRef.current || formDataStr === serverSettingsRef.current) {
-      setAutoSaveStatus(s => s === 'saving' ? '' : s)
+      setAutoSaveStatus(s => (s === 'saving' ? s : ''))
       return
     }
     setAutoSaveStatus('saving')
@@ -1605,17 +1630,20 @@ function SettingsPage({ toast }) {
         if (r.ok) {
           serverSettingsRef.current = formDataStr
           setAutoSaveStatus('saved')
-          setTimeout(() => setAutoSaveStatus(s => s === 'saved' ? '' : s), 3000)
+          setTimeout(() => setAutoSaveStatus(s => (s === 'saved' ? '' : s)), 4000)
         } else {
           setAutoSaveStatus('error')
-          setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 4000)
+          setTimeout(() => setAutoSaveStatus(s => (s === 'error' ? '' : s)), 5000)
         }
       } catch {
         setAutoSaveStatus('error')
-        setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 4000)
+        setTimeout(() => setAutoSaveStatus(s => (s === 'error' ? '' : s)), 5000)
       }
     }, 800)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      setAutoSaveStatus(s => (s === 'saving' ? '' : s))
+    }
   }, [formDataStr])
 
   // Emergency save on page unload (browser close/refresh)
@@ -1974,8 +2002,16 @@ export default function App() {
           </div>
         )}
         {page === 'memory' && <MemoryPage toast={toast} />}
-        {page === 'usage' && <UsagePage toast={toast} />}
-        {page === 'stats' && <OverviewPage />}
+        {visited.has('usage') && (
+          <div style={{ display: page === 'usage' ? undefined : 'none' }}>
+            <UsagePage toast={toast} />
+          </div>
+        )}
+        {visited.has('stats') && (
+          <div style={{ display: page === 'stats' ? undefined : 'none' }}>
+            <OverviewPage />
+          </div>
+        )}
         {visited.has('settings') && (
           <div style={{ display: page === 'settings' ? undefined : 'none' }}>
             <SettingsPage toast={toast} />
