@@ -1069,6 +1069,10 @@ function ProfilePage({ toast }) {
   const [autoSaveStatus, setAutoSaveStatus] = useState('') // '' | 'saving' | 'saved' | 'error'
   const serverProfileRef = useRef(null)
   const serverCredRef = useRef(null)
+  const formRef = useRef(form)
+  const credFormRef = useRef(credForm)
+  formRef.current = form
+  credFormRef.current = credForm
 
   useEffect(() => {
     if (profile) {
@@ -1093,9 +1097,12 @@ function ProfilePage({ toast }) {
   // Autosave profile form
   const formStr = JSON.stringify(form)
   useEffect(() => {
-    if (!serverProfileRef.current || formStr === serverProfileRef.current) return
+    if (!serverProfileRef.current || formStr === serverProfileRef.current) {
+      setAutoSaveStatus(s => s === 'saving' ? '' : s)
+      return
+    }
+    setAutoSaveStatus('saving')
     const timer = setTimeout(async () => {
-      setAutoSaveStatus('saving')
       try {
         const r = await fetch(`${API}/profile`, {
           method: 'PATCH',
@@ -1105,14 +1112,14 @@ function ProfilePage({ toast }) {
         if (r.ok) {
           serverProfileRef.current = formStr
           setAutoSaveStatus('saved')
-          setTimeout(() => setAutoSaveStatus(s => s === 'saved' ? '' : s), 2000)
+          setTimeout(() => setAutoSaveStatus(s => s === 'saved' ? '' : s), 3000)
         } else {
           setAutoSaveStatus('error')
-          setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 3000)
+          setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 4000)
         }
       } catch {
         setAutoSaveStatus('error')
-        setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 3000)
+        setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 4000)
       }
     }, 800)
     return () => clearTimeout(timer)
@@ -1135,6 +1142,32 @@ function ProfilePage({ toast }) {
     return () => clearTimeout(timer)
   }, [credStr])
 
+  // Emergency save on page unload (browser close/refresh)
+  useEffect(() => {
+    const flushSave = () => {
+      const curProfile = JSON.stringify(formRef.current)
+      if (serverProfileRef.current && curProfile !== serverProfileRef.current) {
+        fetch(`${API}/profile`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: curProfile,
+          keepalive: true,
+        })
+      }
+      const curCreds = JSON.stringify(credFormRef.current)
+      if (serverCredRef.current && curCreds !== serverCredRef.current) {
+        fetch(`${API}/settings`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: curCreds,
+          keepalive: true,
+        })
+      }
+    }
+    window.addEventListener('beforeunload', flushSave)
+    return () => window.removeEventListener('beforeunload', flushSave)
+  }, [])
+
   const set = (path, value) => setFormAtPath(setForm, path, value)
 
   if (loading) return <div className="page-content empty"><div className="empty-icon spin">⚙️</div></div>
@@ -1144,9 +1177,9 @@ function ProfilePage({ toast }) {
       <div className="page-header">
         <div><div className="page-title">Profile</div><div className="page-subtitle">Your info used by the AI to fill application forms</div></div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {autoSaveStatus === 'saving' && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-saving…</span>}
-          {autoSaveStatus === 'saved' && <span style={{ fontSize: 12, color: 'var(--green)' }}>✓ Saved</span>}
-          {autoSaveStatus === 'error' && <span style={{ fontSize: 12, color: 'var(--red)' }}>Save failed</span>}
+          {autoSaveStatus === 'saving' && <span className="autosave-indicator autosave-saving">Auto-saving…</span>}
+          {autoSaveStatus === 'saved' && <span className="autosave-indicator autosave-saved">✓ Saved</span>}
+          {autoSaveStatus === 'error' && <span className="autosave-indicator autosave-error">Save failed</span>}
           <button className="btn btn-ghost" onClick={refetch}>↻ Reload</button>
         </div>
       </div>
@@ -1507,6 +1540,8 @@ function SettingsPage({ toast }) {
   const [formData, setFormData] = useState({})
   const [autoSaveStatus, setAutoSaveStatus] = useState('') // '' | 'saving' | 'saved' | 'error'
   const serverSettingsRef = useRef(null)
+  const formDataRef = useRef(formData)
+  formDataRef.current = formData
 
   useEffect(() => {
     if (settings) {
@@ -1523,9 +1558,12 @@ function SettingsPage({ toast }) {
   // Autosave settings
   const formDataStr = JSON.stringify(formData)
   useEffect(() => {
-    if (!serverSettingsRef.current || formDataStr === serverSettingsRef.current) return
+    if (!serverSettingsRef.current || formDataStr === serverSettingsRef.current) {
+      setAutoSaveStatus(s => s === 'saving' ? '' : s)
+      return
+    }
+    setAutoSaveStatus('saving')
     const timer = setTimeout(async () => {
-      setAutoSaveStatus('saving')
       try {
         const r = await fetch(`${API}/settings`, {
           method: 'PATCH',
@@ -1535,18 +1573,35 @@ function SettingsPage({ toast }) {
         if (r.ok) {
           serverSettingsRef.current = formDataStr
           setAutoSaveStatus('saved')
-          setTimeout(() => setAutoSaveStatus(s => s === 'saved' ? '' : s), 2000)
+          setTimeout(() => setAutoSaveStatus(s => s === 'saved' ? '' : s), 3000)
         } else {
           setAutoSaveStatus('error')
-          setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 3000)
+          setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 4000)
         }
       } catch {
         setAutoSaveStatus('error')
-        setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 3000)
+        setTimeout(() => setAutoSaveStatus(s => s === 'error' ? '' : s), 4000)
       }
     }, 800)
     return () => clearTimeout(timer)
   }, [formDataStr])
+
+  // Emergency save on page unload (browser close/refresh)
+  useEffect(() => {
+    const flushSave = () => {
+      const curSettings = JSON.stringify(formDataRef.current)
+      if (serverSettingsRef.current && curSettings !== serverSettingsRef.current) {
+        fetch(`${API}/settings`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: curSettings,
+          keepalive: true,
+        })
+      }
+    }
+    window.addEventListener('beforeunload', flushSave)
+    return () => window.removeEventListener('beforeunload', flushSave)
+  }, [])
 
   if (loading) return <div className="page-content empty"><div className="empty-icon spin">⚙️</div></div>
 
@@ -1555,9 +1610,9 @@ function SettingsPage({ toast }) {
       <div className="page-header">
         <div><div className="page-title">Settings</div><div className="page-subtitle">Manage environment configuration — changes are auto-saved</div></div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {autoSaveStatus === 'saving' && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-saving…</span>}
-          {autoSaveStatus === 'saved' && <span style={{ fontSize: 12, color: 'var(--green)' }}>✓ Saved</span>}
-          {autoSaveStatus === 'error' && <span style={{ fontSize: 12, color: 'var(--red)' }}>Save failed</span>}
+          {autoSaveStatus === 'saving' && <span className="autosave-indicator autosave-saving">Auto-saving…</span>}
+          {autoSaveStatus === 'saved' && <span className="autosave-indicator autosave-saved">✓ Saved</span>}
+          {autoSaveStatus === 'error' && <span className="autosave-indicator autosave-error">Save failed</span>}
           <button className="btn btn-ghost" onClick={refetch}>↻ Reload</button>
         </div>
       </div>
@@ -1812,11 +1867,19 @@ function UsagePage({ toast }) {
 // ── App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [page, setPage] = useState('source')
+  const [visited, setVisited] = useState(() => new Set(['source']))
   const { data: queueData, refetch: refetchQueue } = useApi(`${API}/queue`)
   const { data: settingsData } = useApi(`${API}/settings`)
   const { toasts, toast } = useToast()
   const queueCount = (queueData || []).length
   const isDryRun = settingsData?.dry_run
+
+  useEffect(() => {
+    setVisited(prev => {
+      if (prev.has(page)) return prev
+      return new Set([...prev, page])
+    })
+  }, [page])
 
   // Request notification permission on first load
   useEffect(() => {
@@ -1848,11 +1911,19 @@ export default function App() {
         {page === 'jobs' && <JobsPage toast={toast} />}
         {page === 'activity' && <ActivityPage />}
         {page === 'samples' && <SamplesPage toast={toast} />}
-        {page === 'profile' && <ProfilePage toast={toast} />}
+        {visited.has('profile') && (
+          <div style={{ display: page === 'profile' ? undefined : 'none' }}>
+            <ProfilePage toast={toast} />
+          </div>
+        )}
         {page === 'memory' && <MemoryPage toast={toast} />}
         {page === 'usage' && <UsagePage toast={toast} />}
         {page === 'stats' && <OverviewPage />}
-        {page === 'settings' && <SettingsPage toast={toast} />}
+        {visited.has('settings') && (
+          <div style={{ display: page === 'settings' ? undefined : 'none' }}>
+            <SettingsPage toast={toast} />
+          </div>
+        )}
       </main>
       <Toast toasts={toasts} />
     </div>

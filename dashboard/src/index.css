@@ -678,3 +678,35 @@ a:hover { text-decoration: underline; }
   align-items: center;
 }
 
+/* ── Autosave indicator ── */
+.autosave-indicator {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.autosave-saving {
+  color: var(--accent-light);
+  background: var(--accent-glow);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  animation: autosave-pulse 1.2s ease-in-out infinite;
+}
+.autosave-saved {
+  color: var(--green);
+  background: var(--green-glow);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.autosave-error {
+  color: var(--red);
+  background: var(--red-glow);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+@keyframes autosave-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
